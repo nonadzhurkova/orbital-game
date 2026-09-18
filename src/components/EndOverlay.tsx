@@ -4,6 +4,7 @@ import { useGame } from "@/game/store";
 import { makeLevel, LEVELS, KMS } from "@/game/levels";
 import { SPRING, INSTANT, useFade } from "@/ui/motion";
 import TweenNumber from "@/ui/TweenNumber";
+import { IconStar, IconBurst, IconRetry } from "@/ui/icons";
 
 const btn =
   "pointer-events-auto rounded-lg bg-white/10 px-3 py-2 text-sm font-semibold text-white active:bg-white/25 hover:bg-white/20 transition-colors";
@@ -11,16 +12,15 @@ const btn =
 function Stars({ count }: { count: number }) {
   const reduced = useReducedMotion();
   return (
-    <div className="flex justify-center gap-1 text-4xl">
+    <div className="flex justify-center gap-1.5 text-amber-400">
       {[0, 1, 2].map((i) => (
         <motion.span
           key={i}
           initial={{ scale: 0, rotate: -30 }}
           animate={{ scale: 1, rotate: 0 }}
           transition={reduced ? INSTANT : { ...SPRING, delay: 0.25 + i * 0.18 }}
-          className={i < count ? "" : "opacity-20 grayscale"}
         >
-          ⭐
+          <IconStar size={40} dim={i >= count} />
         </motion.span>
       ))}
     </div>
@@ -96,10 +96,10 @@ export default function EndOverlay() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={reduced ? INSTANT : { delay: 0.9 }}
-                    className={btn}
+                    className={`${btn} flex items-center gap-1.5`}
                     onClick={s.retry}
                   >
-                    ↺ Retry
+                    <IconRetry /> Retry
                   </motion.button>
                   {s.levelIndex < LEVELS.length - 1 ? (
                     <motion.button
@@ -125,13 +125,18 @@ export default function EndOverlay() {
               </>
             ) : (
               <>
-                <div className="text-3xl">💥</div>
+                <div className="flex justify-center text-red-400">
+                  <IconBurst size={40} />
+                </div>
                 <h2 className="mt-2 text-xl font-bold text-white">
                   {s.lostReason ?? "Mission failed"}
                 </h2>
                 <div className="mt-4 flex justify-center gap-2">
-                  <button className={`${btn} !bg-sky-500/60`} onClick={s.retry}>
-                    ↺ Try again
+                  <button
+                    className={`${btn} !bg-sky-500/60 flex items-center gap-1.5`}
+                    onClick={s.retry}
+                  >
+                    <IconRetry /> Try again
                   </button>
                 </div>
               </>

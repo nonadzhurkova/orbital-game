@@ -133,6 +133,7 @@ export class PixiScene {
   private winRings: Graphics[] = [];
   private winRingsRoot = new Container();
   private prediction = new Graphics();
+  private flightPath = new Graphics();
   private glowLayer = new Container();
   private trail = new Graphics();
   private probeRoot = new Container();
@@ -155,6 +156,9 @@ export class PixiScene {
   private lastIndicatorLabel = "";
   private slowFrames = 0;
   private bloomDropped = false;
+  private lastPathLen = 0;
+  private lastPathBuild = 0;
+  private pathDirty = false;
 
   get particleCount(): number {
     return this.particles.count;
@@ -186,6 +190,7 @@ export class PixiScene {
 
     this.shakeRoot.addChild(this.world);
     this.world.addChild(this.boundary);
+    this.world.addChild(this.flightPath);
     this.world.addChild(this.bodiesLayer);
     this.world.addChild(this.winRingsRoot);
     this.world.addChild(this.prediction);
@@ -348,6 +353,7 @@ export class PixiScene {
   /** Rebuild the world-space dashed shapes whose stroke width tracks zoom. */
   private rebuildZoomDependent(zoom: number) {
     this.zoomAtLastBuild = zoom;
+    this.pathDirty = true; // flight-path stroke width tracks zoom too
     const z = 1 / zoom;
 
     this.boundary.clear();
@@ -464,6 +470,7 @@ export class PixiScene {
       this.winRingsRoot.visible = false;
     }
 
+    this.drawFlightPath(engine, zoom, wallTime);
     this.drawTrail(engine, zoom);
     this.drawPrediction(aim, zoom);
     this.drawProbe(engine, zoom, wallTime);
@@ -474,6 +481,26 @@ export class PixiScene {
     this.drawBoundaryWarning(engine, cam, proximity, wallTime);
 
     this.app.render();
+  }
+
+  /**
+   * The whole attempt's flown path: a dim single-color polyline that stays
+   * on screen until retry (the glowing trail above it fades after ~13 s).
+   * Rebuilt at most ~5x/s as points arrive, or when zoom buckets change.
+   */
+  private drawFlightPath(engine: GameEngine, zoom: number, wallTime: number) {
+    const path = engine.path;
+    const changed = path.length !== this.lastPathLen && wallTime - this.lastPathBuild > 0.2;
+    if (!changed && !this.pathDirty) return;
+    this.pathDirty = false;
+    this.lastPathLen = path.length;
+    this.lastPathBuild = wallTime;
+    const g = this.flightPath;
+    g.clear();
+    if (path.length < 2) return;
+    g.moveTo(path[0].x, path[0].y);
+    for (let i = 1; i < path.length; i++) g.lineTo(path[i].x, path[i].y);
+    g.stroke({ width: 1.2 / zoom, color: 0x7f9ac4, alpha: 0.3, join: "round" });
   }
 
   private drawTrail(engine: GameEngine, zoom: number) {

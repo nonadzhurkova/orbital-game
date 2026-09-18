@@ -41,6 +41,40 @@
   which reads badly on numeric text. All movement/scale transitions use
   the shared SPRING from src/ui/motion.ts.
 
+## Autopilot (src/game/autopilot.ts)
+- Simulates candidate launches (speed x aim-angle x wait-for-window),
+  picks the cheapest that: (a) reaches a capture-radius encounter,
+  (b) has the target's gravity dominate the differential tidal pull at
+  that radius (else the orbit isn't stable in the target's Hill
+  sphere), and (c) — critically — the circularized orbit is verified
+  by simulating it forward ~1 orbit and re-checking bound/periapsis/
+  apoapsis. Without step (c) the optimizer happily picks degenerate
+  "cheap" trajectories (e.g. a barely-escaping crawl that transiently
+  grazes the capture window then diverges) since a lower Δv total
+  always wins on the instantaneous geometry alone.
+- Two-stage search: coarse scan, then local refinement around the best
+  near-misses if the coarse pass finds nothing outright (this is what
+  makes level 2's narrow flyby-bent window findable).
+- Verified end-to-end for all 5 levels in src/game/autopilot.test.ts
+  (headless, no React/canvas) — this is the strongest regression net
+  for level balance changes; re-run it after editing any level's
+  bodies/masses/radii.
+- UI: shows live ETA ("burn in 17s · solved in ~29s"), degrades
+  gracefully to "no route found" rather than hanging.
+
+## Telemetry & flight log
+- Telemetry panel (src/components/Telemetry.tsx) reads
+  orbitalElements() against the live target each sync tick — periapsis/
+  apoapsis/eccentricity/bound are real physics, not display fakes.
+- Flight log (src/components/FlightLog.tsx) is store-backed
+  (game/store.ts `log`), capped at 80 entries, persists until retry —
+  it does not fade or reset while the autopilot runs, unlike the
+  transient on-canvas flyby flashes.
+
+## Icons
+- src/ui/icons.tsx: hand-drawn stroke SVGs (24x24, currentColor)
+  replacing all emoji in the HUD/overlays — Fable 5 house style.
+
 ## Possible renderer follow-ups
 - Trail as a MeshRope / custom mesh with per-vertex color: exact
   per-segment fade back, one draw call.

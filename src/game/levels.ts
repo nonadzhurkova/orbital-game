@@ -127,9 +127,12 @@ function level2(): Level {
       {
         id: "giant",
         name: "Brute",
-        pos: vec(0, 110),
+        // Static bodies don't free-fall, so a pinned giant's pull acts as a
+        // uniform disturbance on orbits around the target. Kept light and
+        // far enough from Haven that capture orbits survive (like level 1).
+        pos: vec(-60, 130),
         vel: vec(0, 0),
-        mass: 3.2e5,
+        mass: 1.4e5,
         radius: 48,
         style: gas("#b48ede", "#8a5fc0"),
       },
@@ -138,7 +141,7 @@ function level2(): Level {
         name: "Haven",
         pos: vec(640, -80),
         vel: vec(0, 0),
-        mass: 6e4,
+        mass: 9e4,
         radius: 30,
         style: rock("#d6b95b", "#a3893a"),
       },
@@ -146,8 +149,8 @@ function level2(): Level {
     startBodyId: "home",
     startAngle: -0.3,
     targetBodyId: "target",
-    budget: 170,
-    par: 120,
+    budget: 180,
+    par: 125,
     mapRadius: 3200,
     zoom: 0.62,
   };
@@ -228,7 +231,9 @@ function level4(): Level {
         radius: 20,
         style: rock("#b8b2a8", "#8a8478", 0.1),
       }),
-      onOrbit(gaia, G, 460, 2.0, {
+      // Far enough out that Hop's Hill sphere comfortably fits a capture
+      // orbit (at 460 the stable zone was a sliver and captures drifted off).
+      onOrbit(gaia, G, 700, 2.0, {
         id: "target",
         name: "Hop",
         mass: 1.5e4,

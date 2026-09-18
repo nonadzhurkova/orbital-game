@@ -5,6 +5,16 @@ import type { Phase } from "./engine";
 
 export type SpeedMult = 1 | 10 | 100;
 
+export interface LogEntry {
+  id: number;
+  /** Sim time of the event. */
+  t: number;
+  source: "you" | "auto" | "sys";
+  text: string;
+}
+
+let nextLogId = 1;
+
 interface GameState {
   levelIndex: number;
   /** Bumped to tell the canvas to rebuild the engine (retry). */
@@ -32,6 +42,22 @@ interface GameState {
   commitNonce: number;
   /** UI request: discard the pending aim. */
   clearNonce: number;
+  /** Autopilot on/off; the canvas loop owns the actual controller. */
+  autoPilot: boolean;
+  /** Human-readable autopilot status ("planning 40%", "coasting", ...). */
+  autoStatus: string;
+  /** Live flight metrics relative to the target, for the telemetry panel. */
+  telemetry: {
+    speed: number;
+    relSpeed: number;
+    targetDist: number;
+    periapsis: number;
+    apoapsis: number;
+    ecc: number;
+    bound: boolean;
+  } | null;
+  /** Persistent per-attempt flight log: every maneuver and calculation. */
+  log: LogEntry[];
 
   setLevel: (i: number) => void;
   nextLevel: () => void;
@@ -43,6 +69,8 @@ interface GameState {
   refollow: () => void;
   commitAim: () => void;
   clearAim: () => void;
+  toggleAutoPilot: () => void;
+  pushLog: (t: number, source: LogEntry["source"], text: string) => void;
   /** Called by the render loop to mirror engine state into React. */
   syncFromEngine: (s: Partial<GameState>) => void;
 }
@@ -66,6 +94,10 @@ export const useGame = create<GameState>((set, get) => ({
   aimIsBurn: false,
   commitNonce: 0,
   clearNonce: 0,
+  autoPilot: false,
+  autoStatus: "",
+  telemetry: null,
+  log: [],
 
   setLevel: (i) =>
     set((s) => ({
@@ -73,13 +105,14 @@ export const useGame = create<GameState>((set, get) => ({
       resetNonce: s.resetNonce + 1,
       paused: false,
       speed: 1,
+      log: [],
     })),
   nextLevel: () => {
     const { levelIndex, setLevel } = get();
     if (levelIndex < LEVELS.length - 1) setLevel(levelIndex + 1);
   },
   retry: () =>
-    set((s) => ({ resetNonce: s.resetNonce + 1, paused: false, speed: 1 })),
+    set((s) => ({ resetNonce: s.resetNonce + 1, paused: false, speed: 1, log: [] })),
   setSpeed: (speed) => set({ speed }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setPaused: (paused) => set({ paused }),
@@ -87,5 +120,10 @@ export const useGame = create<GameState>((set, get) => ({
   refollow: () => set((s) => ({ followNonce: s.followNonce + 1 })),
   commitAim: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
   clearAim: () => set((s) => ({ clearNonce: s.clearNonce + 1 })),
+  toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot, autoStatus: "" })),
+  pushLog: (t, source, text) =>
+    set((s) => ({
+      log: [...s.log.slice(-79), { id: nextLogId++, t, source, text }],
+    })),
   syncFromEngine: (s) => set(s),
 }));

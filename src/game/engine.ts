@@ -32,6 +32,7 @@ interface FlybyZone {
 const WIN_APOAPSIS_RADII = 5;
 const TRAIL_EVERY_STEPS = 4;
 const TRAIL_MAX = 400;
+const PATH_MAX = 3000;
 
 export interface TrailPoint {
   x: number;
@@ -60,6 +61,13 @@ export class GameEngine {
   /** 0..1 progress toward the required full orbit. */
   winProgress = 0;
   trail: TrailPoint[] = [];
+  /**
+   * The full flown path for this attempt (kept until retry, unlike the
+   * fading trail). Bounded: when it exceeds PATH_MAX points it is thinned
+   * to every other point and the sampling interval doubles.
+   */
+  path: Vec2[] = [];
+  private pathEvery = 8;
   events: FlashEvent[] = [];
   private flyby = new Map<string, FlybyZone>();
   private stepCount = 0;
@@ -135,6 +143,13 @@ export class GameEngine {
         speed: len(this.probe.vel),
       });
       if (this.trail.length > TRAIL_MAX) this.trail.shift();
+    }
+    if (this.stepCount % this.pathEvery === 0) {
+      this.path.push({ x: this.probe.pos.x, y: this.probe.pos.y });
+      if (this.path.length > PATH_MAX) {
+        this.path = this.path.filter((_, i) => i % 2 === 0);
+        this.pathEvery *= 2;
+      }
     }
     const hit = findCollision(this.world);
     if (hit) {
@@ -247,6 +262,7 @@ export class GameEngine {
     this.probe.vel = add(this.startBody.vel, clamped);
     this.deltaVUsed += l;
     this.phase = "flying";
+    this.path.push({ x: this.probe.pos.x, y: this.probe.pos.y });
     this.suppressCurrentZones();
     return true;
   }

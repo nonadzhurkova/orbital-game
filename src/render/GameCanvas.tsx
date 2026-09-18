@@ -1,10 +1,11 @@
 "use client";
 import { useEffect, useRef } from "react";
 import { GameEngine } from "@/game/engine";
-import { makeLevel } from "@/game/levels";
+import { Autopilot } from "@/game/autopilot";
+import { makeLevel, KMS } from "@/game/levels";
 import { useGame } from "@/game/store";
 import { sound } from "@/game/sound";
-import { DT } from "@/physics/engine";
+import { DT, orbitalElements } from "@/physics/engine";
 import { Vec2, sub, scale, len, dist, norm } from "@/physics/vec";
 import { Camera } from "./camera";
 import { AimState, DV_PER_PX } from "./types";
@@ -57,6 +58,7 @@ export default function GameCanvas() {
     // Launch button / Enter. Esc or right-click cancels.
     let pendingAim: { dv: Vec2; isBurn: boolean } | null = null;
     let aimDirty = false;
+    let autopilot: Autopilot | null = null;
     let lastCommitNonce = useGame.getState().commitNonce;
     let lastClearNonce = useGame.getState().clearNonce;
     let raf = 0;
@@ -123,6 +125,21 @@ export default function GameCanvas() {
       return { x: p.x + (dv.x / l) * px, y: p.y + (dv.y / l) * px };
     };
 
+    /** Log a maneuver with its vector, heading, and resulting speed. */
+    const logManeuver = (source: "you" | "auto", kind: string, dv: Vec2) => {
+      const heading = ((Math.atan2(dv.y, dv.x) * 180) / Math.PI + 360) % 360;
+      const speed = len(engine.probe.vel);
+      useGame
+        .getState()
+        .pushLog(
+          engine.time,
+          source,
+          `${kind}: ${(len(dv) * KMS).toFixed(2)} km/s at ${heading.toFixed(0)}° · speed now ${(
+            speed * KMS
+          ).toFixed(2)} km/s · Δv left ${(engine.deltaVRemaining * KMS).toFixed(1)} km/s`,
+        );
+    };
+
     const commitPending = () => {
       if (!pendingAim) return;
       const dv = engine.clampDv(pendingAim.dv);
@@ -132,12 +149,14 @@ export default function GameCanvas() {
             sound.launch();
             cam.following = true;
             scene?.burst(engine.probe.pos, norm(dv), 50, 55);
+            logManeuver("you", "Launch", dv);
           }
         } else if (pendingAim.isBurn && engine.phase === "flying" && engine.burnsLeft > 0) {
           if (engine.burn(dv)) {
             sound.burn();
             useGame.getState().setPaused(false);
             scene?.burst(engine.probe.pos, norm(dv), 36, 45);
+            logManeuver("you", "Mid-course burn", dv);
           }
         }
       }
@@ -322,6 +341,42 @@ export default function GameCanvas() {
         }
       }
 
+      // Autopilot lifecycle: the store flag turns it on/off; it drives the
+      // engine through the same public API a player uses.
+      if (st.autoPilot) {
+        if (!autopilot && (engine.phase === "aiming" || engine.phase === "flying")) {
+          autopilot = new Autopilot(engine, {
+            pause: (p) => useGame.getState().setPaused(p),
+            setSpeed: (sp) => {
+              if (useGame.getState().speed !== sp) useGame.getState().setSpeed(sp);
+            },
+            onLaunch: (dv) => {
+              pendingAim = null;
+              syncAim();
+              sound.launch();
+              cam.following = true;
+              scene?.burst(engine.probe.pos, norm(dv), 50, 55);
+              logManeuver("auto", "Launch", dv);
+            },
+            onBurn: (dv) => {
+              sound.burn();
+              scene?.burst(engine.probe.pos, norm(dv), 36, 45);
+            },
+            log: (text) => useGame.getState().pushLog(engine.time, "auto", text),
+          });
+        }
+        if (autopilot) {
+          autopilot.update();
+          if (autopilot.done) {
+            autopilot = null;
+            useGame.getState().syncFromEngine({ autoPilot: false });
+          }
+        }
+      } else if (autopilot) {
+        autopilot.dispose();
+        autopilot = null;
+      }
+
       // Fixed-timestep accumulator, scaled by the speed multiplier.
       if (!st.paused) {
         accumulator += dtReal * st.speed;
@@ -344,6 +399,17 @@ export default function GameCanvas() {
         if (engine.phase === "won" || engine.phase === "lost") {
           pendingAim = null; // a pending burn dies with the attempt
           syncAim();
+          useGame
+            .getState()
+            .pushLog(
+              engine.time,
+              "sys",
+              engine.phase === "won"
+                ? `Stable orbit achieved around ${engine.targetBody.name} — ${(
+                    engine.deltaVUsed * KMS
+                  ).toFixed(1)} km/s used, ${engine.stars()} stars`
+                : `Mission lost: ${engine.lostReason}`,
+            );
         }
         prevPhase = engine.phase;
       }
@@ -352,6 +418,15 @@ export default function GameCanvas() {
           seenEventId = ev.id;
           sound.flyby(ev.gain);
           shakeFrames = 6; // slingshot kick
+          useGame
+            .getState()
+            .pushLog(
+              engine.time,
+              "sys",
+              `Gravity assist: ${ev.gain ? "gained" : "lost"} ${ev.text.replace(/[+−]/, "")} — now ${(
+                len(engine.probe.vel) * KMS
+              ).toFixed(2)} km/s`,
+            );
         }
       }
 
@@ -408,7 +483,18 @@ export default function GameCanvas() {
       // Mirror engine state into the store for the HUD (throttled).
       if (now - lastSync > 120) {
         lastSync = now;
+        const t = engine.targetBody;
+        const el = orbitalElements(engine.probe, t, engine.level.G);
         useGame.getState().syncFromEngine({
+          telemetry: {
+            speed: len(engine.probe.vel),
+            relSpeed: len(sub(engine.probe.vel, t.vel)),
+            targetDist: dist(engine.probe.pos, t.pos),
+            periapsis: el.periapsis,
+            apoapsis: el.apoapsis,
+            ecc: el.e,
+            bound: el.bound,
+          },
           phase: engine.phase,
           deltaVRemaining: engine.deltaVRemaining,
           budget: engine.level.budget,
@@ -417,6 +503,7 @@ export default function GameCanvas() {
           winProgress: engine.winProgress,
           stars: engine.phase === "won" ? engine.stars() : 0,
           lostReason: engine.lostReason,
+          autoStatus: autopilot?.status ?? "",
         });
       }
     };
