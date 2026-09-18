@@ -9,11 +9,9 @@ import { Vec2, sub, scale, len, dist } from "@/physics/vec";
 import { Camera } from "./camera";
 import { Starfield } from "./starfield";
 import { ParticlePool } from "./particles";
-import { drawScene, AimState } from "./draw";
+import { drawScene, AimState, DV_PER_PX } from "./draw";
 import { norm } from "@/physics/vec";
 
-/** Delta-v units gained per screen pixel of drag. */
-const DV_PER_PX = 0.7;
 /** Max fixed steps per rendered frame (keeps 100x from freezing the tab). */
 const MAX_STEPS_PER_FRAME = 480;
 const PREDICT_SECONDS = 60;
@@ -59,6 +57,13 @@ export default function GameCanvas() {
     let drag: DragState | null = null;
     let pinchDist = 0;
     let aim: AimState | null = null;
+    // Two-step aiming: a released drag *sets* the aim; the player can then
+    // re-drag the arrow tip or nudge with arrow keys, and commits with the
+    // Launch button / Enter. Esc or right-click cancels.
+    let pendingAim: { dv: Vec2; isBurn: boolean } | null = null;
+    let aimDirty = false;
+    let lastCommitNonce = useGame.getState().commitNonce;
+    let lastClearNonce = useGame.getState().clearNonce;
     let raf = 0;
     let lastT = performance.now();
     let accumulator = 0;
@@ -101,9 +106,51 @@ export default function GameCanvas() {
       winProgress: 0,
       stars: 0,
       lostReason: null,
+      aimReady: false,
+      aimIsBurn: false,
     });
 
     const screenOfProbe = () => cam.toScreen(engine.probe.pos);
+
+    const syncAim = () =>
+      useGame.getState().syncFromEngine({
+        aimReady: !!pendingAim,
+        aimIsBurn: !!pendingAim?.isBurn,
+      });
+
+    /** Screen position of the pending aim arrow's tip (matches drawAim). */
+    const aimTipScreen = (): Vec2 | null => {
+      if (!pendingAim) return null;
+      const dv = engine.clampDv(pendingAim.dv);
+      const l = len(dv);
+      if (l < 0.5) return null;
+      const p = screenOfProbe();
+      const px = l / DV_PER_PX;
+      return { x: p.x + (dv.x / l) * px, y: p.y + (dv.y / l) * px };
+    };
+
+    const commitPending = () => {
+      if (!pendingAim) return;
+      const dv = engine.clampDv(pendingAim.dv);
+      if (len(dv) >= 1.5) {
+        if (!pendingAim.isBurn && engine.phase === "aiming") {
+          if (engine.launch(dv)) {
+            sound.launch();
+            cam.following = true;
+            particles.burst(engine.probe.pos, norm(dv), 50, 55);
+          }
+        } else if (pendingAim.isBurn && engine.phase === "flying" && engine.burnsLeft > 0) {
+          if (engine.burn(dv)) {
+            sound.burn();
+            useGame.getState().setPaused(false);
+            particles.burst(engine.probe.pos, norm(dv), 36, 45);
+          }
+        }
+      }
+      pendingAim = null;
+      aim = null;
+      syncAim();
+    };
 
     const dvFromDrag = (d: DragState): Vec2 => {
       // Drag direction = launch direction; length = delta-v (clamped by engine).
@@ -129,16 +176,18 @@ export default function GameCanvas() {
         return;
       }
       const st = useGame.getState();
-      const nearProbe = dist(p, screenOfProbe()) < 44;
-      if (engine.phase === "aiming" && nearProbe) {
-        drag = { pointerId: e.pointerId, mode: "aim", last: p, current: p };
-      } else if (
-        engine.phase === "flying" &&
-        st.paused &&
-        engine.burnsLeft > 0 &&
-        nearProbe
-      ) {
-        drag = { pointerId: e.pointerId, mode: "burn", last: p, current: p };
+      const nearProbe = dist(p, screenOfProbe()) < 48;
+      const tip = aimTipScreen();
+      const nearTip = tip !== null && dist(p, tip) < 32;
+      const canAim = engine.phase === "aiming";
+      const canBurn = engine.phase === "flying" && st.paused && engine.burnsLeft > 0;
+      if ((canAim || canBurn) && (nearProbe || nearTip)) {
+        drag = {
+          pointerId: e.pointerId,
+          mode: canAim ? "aim" : "burn",
+          last: p,
+          current: p,
+        };
       } else {
         drag = { pointerId: e.pointerId, mode: "pan", last: p, current: p };
       }
@@ -172,24 +221,61 @@ export default function GameCanvas() {
       if (!drag || drag.pointerId !== e.pointerId) return;
       if (drag.mode === "aim" || drag.mode === "burn") {
         const dv = dvFromDrag(drag);
+        // Release SETS the aim (it doesn't launch) — commit is a separate
+        // button/Enter press. A tiny drag is a tap: keep any existing aim.
         if (len(dv) >= 1.5) {
-          if (drag.mode === "aim") {
-            if (engine.launch(dv)) {
-              sound.launch();
-              cam.following = true;
-              particles.burst(engine.probe.pos, norm(dv), 50, 55);
-            }
-          } else {
-            if (engine.burn(dv)) {
-              sound.burn();
-              useGame.getState().setPaused(false);
-              particles.burst(engine.probe.pos, norm(dv), 36, 45);
-            }
-          }
+          pendingAim = { dv, isBurn: drag.mode === "burn" };
+          aimDirty = true;
+          syncAim();
         }
       }
       drag = null;
-      aim = null;
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      if (pendingAim) {
+        pendingAim = null;
+        aim = null;
+        syncAim();
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && pendingAim) {
+        e.preventDefault();
+        commitPending();
+        return;
+      }
+      if (e.key === "Escape" && pendingAim) {
+        pendingAim = null;
+        aim = null;
+        syncAim();
+        return;
+      }
+      if (!pendingAim) return;
+      // Arrow keys fine-tune: left/right rotate, up/down change delta-v.
+      // Shift makes the step 10x finer.
+      const rotStep = (e.shiftKey ? 0.2 : 2) * (Math.PI / 180);
+      const magStep = e.shiftKey ? 0.3 : 3;
+      const dv = pendingAim.dv;
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        const a = e.key === "ArrowLeft" ? -rotStep : rotStep;
+        const c = Math.cos(a);
+        const s = Math.sin(a);
+        pendingAim.dv = { x: dv.x * c - dv.y * s, y: dv.x * s + dv.y * c };
+        aimDirty = true;
+      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const m = len(dv);
+        if (m > 0) {
+          const target = Math.max(1.5, m + (e.key === "ArrowUp" ? magStep : -magStep));
+          const k = target / m;
+          pendingAim.dv = { x: dv.x * k, y: dv.y * k };
+          aimDirty = true;
+        }
+      }
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -202,6 +288,8 @@ export default function GameCanvas() {
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", onContextMenu);
+    window.addEventListener("keydown", onKeyDown);
 
     const frame = (now: number) => {
       if (disposed) return;
@@ -214,6 +302,19 @@ export default function GameCanvas() {
       if (st.followNonce !== lastFollowNonce) {
         lastFollowNonce = st.followNonce;
         cam.following = true;
+      }
+      // Commit / clear requests from the HUD buttons.
+      if (st.commitNonce !== lastCommitNonce) {
+        lastCommitNonce = st.commitNonce;
+        commitPending();
+      }
+      if (st.clearNonce !== lastClearNonce) {
+        lastClearNonce = st.clearNonce;
+        if (pendingAim) {
+          pendingAim = null;
+          aim = null;
+          syncAim();
+        }
       }
 
       // Fixed-timestep accumulator, scaled by the speed multiplier.
@@ -235,6 +336,10 @@ export default function GameCanvas() {
           winWallStart = now;
         }
         if (engine.phase === "lost") sound.lose();
+        if (engine.phase === "won" || engine.phase === "lost") {
+          pendingAim = null; // a pending burn dies with the attempt
+          syncAim();
+        }
         prevPhase = engine.phase;
       }
       for (const ev of engine.events) {
@@ -246,25 +351,34 @@ export default function GameCanvas() {
       }
       particles.update(dtReal);
 
-      // Live prediction while dragging an aim. Recompute rate adapts to how
-      // long the last prediction took, so heavy levels stay at 60 fps.
-      if (drag && (drag.mode === "aim" || drag.mode === "burn")) {
-        const dv = dvFromDrag(drag);
+      // Live prediction for the active drag or the pending (set) aim.
+      // Recompute rate adapts to the last prediction's cost so heavy levels
+      // stay at 60 fps; a frozen world reuses the cached prediction.
+      const isAimDrag = drag !== null && drag.mode !== "pan";
+      const source = isAimDrag
+        ? { dv: dvFromDrag(drag!), isBurn: drag!.mode === "burn" }
+        : pendingAim
+          ? { dv: engine.clampDv(pendingAim.dv), isBurn: pendingAim.isBurn }
+          : null;
+      if (source) {
         const skip = predictCost > 6 ? 4 : predictCost > 3 ? 3 : 2;
         // Degrade the horizon on slow CPUs instead of dropping frames.
         // (Rises fast on a slow prediction, recovers slowly to avoid flicker.)
         const horizon = predictCost > 9 ? 30 : predictCost > 5 ? 45 : PREDICT_SECONDS;
-        if (!aim || predictSkip++ % skip === 0) {
+        const worldMoves =
+          !st.paused && (engine.phase === "flying" || engine.level.bodies.some((b) => b.dynamic));
+        if (!aim || aimDirty || ((isAimDrag || worldMoves) && predictSkip++ % skip === 0)) {
           const t0 = performance.now();
           aim = {
-            dv,
-            prediction: engine.predict(dv, horizon),
-            isBurn: drag.mode === "burn",
+            dv: source.dv,
+            prediction: engine.predict(source.dv, horizon),
+            isBurn: source.isBurn,
           };
           const cost = performance.now() - t0;
           predictCost = cost > predictCost ? cost : predictCost * 0.98 + cost * 0.02;
+          aimDirty = false;
         } else {
-          aim = { ...aim, dv };
+          aim = { ...aim, dv: source.dv, isBurn: source.isBurn };
         }
       } else {
         aim = null;
@@ -318,6 +432,8 @@ export default function GameCanvas() {
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("keydown", onKeyDown);
     };
   }, [levelIndex, resetNonce]);
 

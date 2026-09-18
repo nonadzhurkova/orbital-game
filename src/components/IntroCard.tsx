@@ -9,6 +9,7 @@ import { useAnim } from "@/ui/motion";
 export default function IntroCard() {
   const levelIndex = useGame((s) => s.levelIndex);
   const phase = useGame((s) => s.phase);
+  const aimReady = useGame((s) => s.aimReady);
   const [dismissed, setDismissed] = useState(false);
   const anim = useAnim();
 
@@ -17,7 +18,8 @@ export default function IntroCard() {
   }, [levelIndex]);
 
   const level = makeLevel(levelIndex);
-  const show = !dismissed && phase === "aiming";
+  // Auto-hide once the player has set an aim — the Launch bar needs the room.
+  const show = !dismissed && phase === "aiming" && !aimReady;
 
   return (
     <AnimatePresence>
@@ -46,7 +48,11 @@ export default function IntroCard() {
               <b className="tabular-nums">{(level.par * KMS).toFixed(1)} km/s</b>
             </span>
           </div>
-          <div className="mt-3 text-center text-xs text-white/40">tap to dismiss</div>
+          <div className="mt-2.5 text-xs leading-relaxed text-white/55">
+            Drag from the probe to set your aim, adjust it as long as you like
+            (drag the arrow tip, or use arrow keys), then hit <b>Launch</b>.
+          </div>
+          <div className="mt-2 text-center text-xs text-white/40">tap to dismiss</div>
         </motion.button>
       )}
     </AnimatePresence>

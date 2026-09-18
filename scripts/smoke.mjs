@@ -13,6 +13,9 @@ page.on("console", (msg) => {
   if (msg.type() === "error") errors.push(msg.text());
 });
 page.on("pageerror", (err) => errors.push("PAGEERROR: " + err.message));
+page.on("response", (res) => {
+  if (res.status() >= 400) errors.push(`HTTP ${res.status()} ${res.url()}`);
+});
 
 await page.goto("http://localhost:3000", { waitUntil: "networkidle0", timeout: 60000 });
 await new Promise((r) => setTimeout(r, 2500));
@@ -28,6 +31,10 @@ for (let i = 1; i <= 10; i++) {
 }
 await page.screenshot({ path: `${SHOT_DIR}/shot-2-aiming.png` });
 await page.mouse.up();
+// Two-step aiming: release sets the aim, Enter commits the launch.
+await new Promise((r) => setTimeout(r, 250));
+await page.screenshot({ path: `${SHOT_DIR}/shot-2c-aim-set.png` });
+await page.keyboard.press("Enter");
 await new Promise((r) => setTimeout(r, 120));
 const justAfterLaunch = await page.evaluate(() => window.__orbitalDebug);
 console.log("after launch:", JSON.stringify(justAfterLaunch));

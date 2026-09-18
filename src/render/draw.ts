@@ -4,6 +4,13 @@ import { LevelBody, PROBE_RADIUS, KMS } from "@/game/levels";
 import { Vec2, len } from "@/physics/vec";
 import type { TrajectoryResult } from "@/physics/types";
 
+/**
+ * Delta-v units gained per screen pixel of drag. Also fixes the aim arrow's
+ * on-screen length (dv / DV_PER_PX) so the arrow tip sits exactly where the
+ * drag ended and can be grabbed to adjust.
+ */
+export const DV_PER_PX = 0.7;
+
 export interface AimState {
   /** Requested delta-v vector (world units), already clamped by the engine. */
   dv: Vec2;
@@ -237,9 +244,9 @@ function drawAim(
   const from = cam.toScreen(engine.probe.pos);
   const dvLen = len(aim.dv);
   if (dvLen < 0.5) return;
-  // Arrow points along the launch direction; length ~ delta-v.
+  // Arrow points along the launch direction; length mirrors the drag length.
   const dir = { x: aim.dv.x / dvLen, y: aim.dv.y / dvLen };
-  const px = Math.min(dvLen, engine.deltaVRemaining) * 1.1 + 24;
+  const px = Math.min(dvLen, engine.deltaVRemaining) / DV_PER_PX;
   const tip = { x: from.x + dir.x * px, y: from.y + dir.y * px };
   ctx.strokeStyle = aim.isBurn ? "rgba(255, 200, 90, 0.95)" : "rgba(120, 255, 180, 0.95)";
   ctx.lineWidth = 2.5;
@@ -255,6 +262,11 @@ function drawAim(
   ctx.moveTo(tip.x, tip.y);
   ctx.lineTo(tip.x - Math.cos(a + 0.4) * 10, tip.y - Math.sin(a + 0.4) * 10);
   ctx.stroke();
+  // Grab handle at the tip: this is draggable to adjust the aim.
+  ctx.fillStyle = aim.isBurn ? "rgba(255, 200, 90, 0.35)" : "rgba(120, 255, 180, 0.35)";
+  ctx.beginPath();
+  ctx.arc(tip.x, tip.y, 9, 0, Math.PI * 2);
+  ctx.fill();
   // Delta-v readout near the arrow tip.
   const clamped = Math.min(dvLen, engine.deltaVRemaining);
   ctx.font = "600 13px system-ui, sans-serif";

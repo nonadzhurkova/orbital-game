@@ -23,6 +23,7 @@ export default function HUD() {
   const dvFrac = s.budget > 0 ? s.deltaVRemaining / s.budget : 0;
   const slideDown = useAnim();
   const slideUp = useAnim(0.1);
+  const commitPop = useAnim();
 
   return (
     <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-3 sm:p-4">
@@ -84,11 +85,33 @@ export default function HUD() {
         className="flex flex-col gap-2"
       >
         <div className="flex justify-center">
-          {s.phase === "flying" && s.paused && s.burnsLeft > 0 && (
-            <div className="rounded-xl bg-amber-400/20 px-4 py-2 text-center text-xs text-amber-100 backdrop-blur-sm sm:text-sm">
-              Paused — drag from the probe for your one mid-course burn.
+          {s.aimReady ? (
+            <div className="pointer-events-auto flex items-center gap-2">
+              <motion.button
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={commitPop}
+                className="rounded-xl bg-emerald-500/80 px-6 py-3 text-base font-bold text-white shadow-lg backdrop-blur-sm hover:bg-emerald-400/80 active:bg-emerald-300/80"
+                onClick={s.commitAim}
+              >
+                🚀 {s.aimIsBurn ? "Burn" : "Launch"}
+              </motion.button>
+              <button
+                className={btn}
+                onClick={s.clearAim}
+                aria-label="Cancel aim"
+              >
+                ✕
+              </button>
+              <span className="hidden text-xs text-white/50 sm:block">
+                Enter to go · arrows fine-tune · Esc cancels
+              </span>
             </div>
-          )}
+          ) : s.phase === "flying" && s.paused && s.burnsLeft > 0 ? (
+            <div className="rounded-xl bg-amber-400/20 px-4 py-2 text-center text-xs text-amber-100 backdrop-blur-sm sm:text-sm">
+              Paused — drag from the probe to set your one mid-course burn.
+            </div>
+          ) : null}
         </div>
         <div className="flex items-end justify-between gap-2">
           <div className="flex gap-1.5">

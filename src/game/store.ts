@@ -24,6 +24,14 @@ interface GameState {
   lostReason: string | null;
   /** UI request: camera should re-follow the probe. */
   followNonce: number;
+  /** True when an aim is set and waiting for the player to commit it. */
+  aimReady: boolean;
+  /** True when the pending aim is a mid-course burn. */
+  aimIsBurn: boolean;
+  /** UI request: commit the pending aim (launch or burn). */
+  commitNonce: number;
+  /** UI request: discard the pending aim. */
+  clearNonce: number;
 
   setLevel: (i: number) => void;
   nextLevel: () => void;
@@ -33,6 +41,8 @@ interface GameState {
   setPaused: (p: boolean) => void;
   toggleSound: () => void;
   refollow: () => void;
+  commitAim: () => void;
+  clearAim: () => void;
   /** Called by the render loop to mirror engine state into React. */
   syncFromEngine: (s: Partial<GameState>) => void;
 }
@@ -52,6 +62,10 @@ export const useGame = create<GameState>((set, get) => ({
   stars: 0,
   lostReason: null,
   followNonce: 0,
+  aimReady: false,
+  aimIsBurn: false,
+  commitNonce: 0,
+  clearNonce: 0,
 
   setLevel: (i) =>
     set((s) => ({
@@ -71,5 +85,7 @@ export const useGame = create<GameState>((set, get) => ({
   setPaused: (paused) => set({ paused }),
   toggleSound: () => set((s) => ({ soundOn: !s.soundOn })),
   refollow: () => set((s) => ({ followNonce: s.followNonce + 1 })),
+  commitAim: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
+  clearAim: () => set((s) => ({ clearNonce: s.clearNonce + 1 })),
   syncFromEngine: (s) => set(s),
 }));
