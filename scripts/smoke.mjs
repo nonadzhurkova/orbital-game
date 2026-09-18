@@ -28,7 +28,11 @@ for (let i = 1; i <= 10; i++) {
 }
 await page.screenshot({ path: `${SHOT_DIR}/shot-2-aiming.png` });
 await page.mouse.up();
-await new Promise((r) => setTimeout(r, 3000));
+await new Promise((r) => setTimeout(r, 120));
+const justAfterLaunch = await page.evaluate(() => window.__orbitalDebug);
+console.log("after launch:", JSON.stringify(justAfterLaunch));
+await page.screenshot({ path: `${SHOT_DIR}/shot-2b-launch.png` });
+await new Promise((r) => setTimeout(r, 2900));
 await page.screenshot({ path: `${SHOT_DIR}/shot-3-flying.png` });
 
 // Speed up to see an outcome.
@@ -40,5 +44,7 @@ for (const b of buttons) {
 await new Promise((r) => setTimeout(r, 5000));
 await page.screenshot({ path: `${SHOT_DIR}/shot-4-later.png` });
 
+const debug = await page.evaluate(() => window.__orbitalDebug);
+console.log("final debug:", JSON.stringify(debug));
 console.log("CONSOLE ERRORS:", errors.length ? errors : "none");
 await browser.close();

@@ -31,8 +31,9 @@ export class Starfield {
 
   constructor(seed = 42) {
     this.layers = [
-      { parallax: 0.15, stars: this.makeStars(seed, 34, 0.9) },
-      { parallax: 0.4, stars: this.makeStars(seed + 1, 22, 1.4) },
+      { parallax: 0.2, stars: this.makeStars(seed, 34, 0.8) },
+      { parallax: 0.5, stars: this.makeStars(seed + 1, 22, 1.2) },
+      { parallax: 0.8, stars: this.makeStars(seed + 2, 12, 1.7) },
     ];
   }
 

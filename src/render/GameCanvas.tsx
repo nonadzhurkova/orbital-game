@@ -8,13 +8,28 @@ import { DT } from "@/physics/engine";
 import { Vec2, sub, scale, len, dist } from "@/physics/vec";
 import { Camera } from "./camera";
 import { Starfield } from "./starfield";
+import { ParticlePool } from "./particles";
 import { drawScene, AimState } from "./draw";
+import { norm } from "@/physics/vec";
 
 /** Delta-v units gained per screen pixel of drag. */
 const DV_PER_PX = 0.7;
 /** Max fixed steps per rendered frame (keeps 100x from freezing the tab). */
 const MAX_STEPS_PER_FRAME = 480;
 const PREDICT_SECONDS = 60;
+
+/** Live perf/debug data read by ProfileHUD and the smoke test. */
+export interface OrbitalDebug {
+  fps: number;
+  bodies: number;
+  particles: number;
+  phase: string;
+}
+declare global {
+  interface Window {
+    __orbitalDebug?: OrbitalDebug;
+  }
+}
 
 interface DragState {
   pointerId: number;
@@ -37,6 +52,9 @@ export default function GameCanvas() {
     const engine = new GameEngine(makeLevel(levelIndex));
     const cam = new Camera();
     const starfield = new Starfield(7 + levelIndex);
+    const particles = new ParticlePool();
+    let shakeFrames = 0;
+    let winWallStart = 0;
     const pointers = new Map<number, Vec2>();
     let drag: DragState | null = null;
     let pinchDist = 0;
@@ -50,6 +68,10 @@ export default function GameCanvas() {
     let seenEventId = 0;
     let predictSkip = 0;
     let disposed = false;
+    let fpsSmoothed = 60;
+    // One shared debug object, mutated in place (no per-frame allocation).
+    const debug: OrbitalDebug = { fps: 60, bodies: 0, particles: 0, phase: "aiming" };
+    window.__orbitalDebug = debug;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const resize = () => {
@@ -154,11 +176,13 @@ export default function GameCanvas() {
             if (engine.launch(dv)) {
               sound.launch();
               cam.following = true;
+              particles.burst(engine.probe.pos, norm(dv), 50, 55);
             }
           } else {
             if (engine.burn(dv)) {
               sound.burn();
               useGame.getState().setPaused(false);
+              particles.burst(engine.probe.pos, norm(dv), 36, 45);
             }
           }
         }
@@ -203,9 +227,12 @@ export default function GameCanvas() {
         if (steps >= MAX_STEPS_PER_FRAME) accumulator = 0; // can't keep up; drop time
       }
 
-      // Sounds for phase transitions and flyby flashes.
+      // Sounds and effects for phase transitions and flyby flashes.
       if (engine.phase !== prevPhase) {
-        if (engine.phase === "won") sound.win();
+        if (engine.phase === "won") {
+          sound.win();
+          winWallStart = now;
+        }
         if (engine.phase === "lost") sound.lose();
         prevPhase = engine.phase;
       }
@@ -213,8 +240,10 @@ export default function GameCanvas() {
         if (ev.id > seenEventId) {
           seenEventId = ev.id;
           sound.flyby(ev.gain);
+          shakeFrames = 6; // slingshot kick
         }
       }
+      particles.update(dtReal);
 
       // Live prediction while dragging an aim (recomputed at ~30 Hz).
       if (drag && (drag.mode === "aim" || drag.mode === "burn")) {
@@ -234,12 +263,25 @@ export default function GameCanvas() {
 
       cam.follow(engine.probe.pos);
 
-      // Draw.
+      // Draw (with a brief screen shake after slingshot kicks).
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = "#070b14";
       ctx.fillRect(0, 0, cam.viewportW, cam.viewportH);
+      if (shakeFrames > 0) {
+        const k = shakeFrames / 6;
+        ctx.translate((Math.random() - 0.5) * 10 * k, (Math.random() - 0.5) * 10 * k);
+        shakeFrames--;
+      }
       starfield.draw(ctx, cam, now / 1000);
-      drawScene(ctx, cam, engine, now / 1000, aim);
+      const winT = winWallStart > 0 ? (now - winWallStart) / 1000 : 0;
+      drawScene(ctx, cam, engine, now / 1000, aim, winT);
+      particles.draw(ctx, cam);
+
+      if (dtReal > 0) fpsSmoothed += (1 / dtReal - fpsSmoothed) * 0.05;
+      debug.fps = fpsSmoothed;
+      debug.bodies = engine.level.bodies.length;
+      debug.particles = particles.count;
+      debug.phase = engine.phase;
 
       // Mirror engine state into the store for the HUD (throttled).
       if (now - lastSync > 120) {

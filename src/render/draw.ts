@@ -1,5 +1,5 @@
 import type { Camera } from "./camera";
-import type { GameEngine } from "@/game/engine";
+import type { GameEngine, TrailPoint } from "@/game/engine";
 import { LevelBody, PROBE_RADIUS, KMS } from "@/game/levels";
 import { Vec2, len } from "@/physics/vec";
 import type { TrajectoryResult } from "@/physics/types";
@@ -99,6 +99,21 @@ function drawBody(
   ctx.globalAlpha = 1;
   ctx.restore(); // un-rotate
 
+  // Soft atmosphere: two concentric rings in the body's own hue.
+  if (body.style.kind !== "star") {
+    ctx.strokeStyle = body.style.base;
+    ctx.globalAlpha = 0.22;
+    ctx.lineWidth = Math.max(r * 0.09, 1);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 1.12, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 0.09;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r * 1.28, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   if (isTarget) {
     // Capture zone ring: orbits must fit under 5 radii.
     ctx.strokeStyle = "rgba(120, 255, 180, 0.35)";
@@ -111,14 +126,33 @@ function drawBody(
   }
 }
 
-function drawTrail(ctx: CanvasRenderingContext2D, cam: Camera, trail: Vec2[]) {
+/** Speed-mapped trail color: slow = blue, mid = white, fast = orange. */
+function trailColor(speed: number, alpha: number): string {
+  const t = Math.min(speed / 90, 1);
+  let r: number, g: number, b: number;
+  if (t < 0.55) {
+    const u = t / 0.55;
+    r = 110 + 145 * u;
+    g = 170 + 85 * u;
+    b = 255;
+  } else {
+    const u = (t - 0.55) / 0.45;
+    r = 255;
+    g = 255 - 95 * u;
+    b = 255 - 185 * u;
+  }
+  return `rgba(${r | 0},${g | 0},${b | 0},${alpha})`;
+}
+
+function drawTrail(ctx: CanvasRenderingContext2D, cam: Camera, trail: TrailPoint[]) {
   if (trail.length < 2) return;
   ctx.lineWidth = 1.5;
   ctx.lineCap = "round";
   for (let i = 1; i < trail.length; i++) {
     const a = cam.toScreen(trail[i - 1]);
     const b = cam.toScreen(trail[i]);
-    ctx.strokeStyle = `rgba(140, 200, 255, ${(0.6 * i) / trail.length})`;
+    // Alpha fades toward the tail; color follows the speed at that point.
+    ctx.strokeStyle = trailColor(trail[i].speed, (0.65 * i) / trail.length);
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
@@ -247,17 +281,87 @@ function drawFlashes(
   }
 }
 
+/** Accelerating dashed "wormhole" rings around the target after a win. */
+function drawWinRings(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  target: LevelBody,
+  winT: number,
+) {
+  const s = cam.toScreen(target.pos);
+  const R = target.radius * cam.zoom;
+  const w = Math.min(winT / 1.5, 1); // ramp over 1.5 s
+  const spin = winT * (0.6 + 4.5 * w); // spins faster as w grows
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    const r = R * (1.7 + i * 0.65);
+    const dir = i % 2 === 0 ? 1 : -1;
+    ctx.strokeStyle = `rgba(140, 255, 200, ${0.25 + 0.45 * w - i * 0.08})`;
+    ctx.setLineDash([10, 14]);
+    ctx.lineDashOffset = dir * spin * r;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+}
+
+/** Edge chevron pointing at an off-screen world position. */
+function drawOffscreenIndicator(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  pos: Vec2,
+  color: string,
+  label: string,
+) {
+  const s = cam.toScreen(pos);
+  const m = 40;
+  const W = cam.viewportW;
+  const H = cam.viewportH;
+  if (s.x >= 0 && s.x <= W && s.y >= 0 && s.y <= H) return;
+  const cx = W / 2;
+  const cy = H / 2;
+  const dx = s.x - cx;
+  const dy = s.y - cy;
+  const k = Math.min(
+    (W / 2 - m) / Math.max(Math.abs(dx), 1e-6),
+    (H / 2 - m) / Math.max(Math.abs(dy), 1e-6),
+  );
+  const ex = cx + dx * k;
+  const ey = cy + dy * k;
+  const a = Math.atan2(dy, dx);
+  ctx.save();
+  ctx.translate(ex, ey);
+  ctx.rotate(a);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(12, 0);
+  ctx.lineTo(-4, -7);
+  ctx.lineTo(-4, 7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillStyle = color;
+  ctx.fillText(label, ex - Math.cos(a) * 22, ey - Math.sin(a) * 22 + 4);
+}
+
 export function drawScene(
   ctx: CanvasRenderingContext2D,
   cam: Camera,
   engine: GameEngine,
   wallTime: number,
   aim: AimState | null,
+  winT: number,
 ) {
   const lvl = engine.level;
-  // Map boundary.
+  // Map boundary — brightens as the probe gets close to it.
+  const probeR = len(engine.probe.pos);
+  const proximity = Math.max(0, Math.min(1, (probeR / lvl.mapRadius - 0.7) / 0.3));
   const c = cam.toScreen({ x: 0, y: 0 });
-  ctx.strokeStyle = "rgba(255, 100, 100, 0.18)";
+  ctx.strokeStyle = `rgba(255, 100, 100, ${0.18 + 0.5 * proximity})`;
   ctx.lineWidth = 3;
   ctx.setLineDash([12, 14]);
   ctx.beginPath();
@@ -269,8 +373,36 @@ export function drawScene(
   for (const b of lvl.bodies) {
     drawBody(ctx, cam, b, engine.time, b.id === lvl.targetBodyId);
   }
+  if (winT > 0) drawWinRings(ctx, cam, engine.targetBody, winT);
   if (aim) drawPrediction(ctx, cam, aim.prediction);
   drawProbe(ctx, cam, engine, wallTime);
   if (aim) drawAim(ctx, cam, engine, aim);
   drawFlashes(ctx, cam, engine);
+
+  // "Where am I?" hints: edge chevrons for the target and the probe.
+  if (engine.phase === "aiming" || engine.phase === "flying") {
+    const t = engine.targetBody;
+    const distToTarget = len({
+      x: t.pos.x - engine.probe.pos.x,
+      y: t.pos.y - engine.probe.pos.y,
+    });
+    drawOffscreenIndicator(
+      ctx,
+      cam,
+      t.pos,
+      "rgba(120, 255, 180, 0.95)",
+      `${t.name} ${(distToTarget / 100).toFixed(1)}`,
+    );
+    drawOffscreenIndicator(ctx, cam, engine.probe.pos, "rgba(200, 230, 255, 0.95)", "probe");
+  }
+
+  // Boundary warning near the probe when drifting toward the void.
+  if (engine.phase === "flying" && proximity > 0) {
+    const ps = cam.toScreen(engine.probe.pos);
+    const pulse = 0.6 + 0.4 * Math.sin(wallTime * 6);
+    ctx.font = "700 13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = `rgba(255, 120, 110, ${proximity * pulse})`;
+    ctx.fillText("⚠ leaving the map", ps.x, ps.y - 26);
+  }
 }

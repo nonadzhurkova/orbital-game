@@ -31,7 +31,13 @@ interface FlybyZone {
 
 const WIN_APOAPSIS_RADII = 5;
 const TRAIL_EVERY_STEPS = 4;
-const TRAIL_MAX = 700;
+const TRAIL_MAX = 400;
+
+export interface TrailPoint {
+  x: number;
+  y: number;
+  speed: number;
+}
 
 let nextEventId = 1;
 
@@ -53,7 +59,7 @@ export class GameEngine {
   private prevRelAngle: number | null = null;
   /** 0..1 progress toward the required full orbit. */
   winProgress = 0;
-  trail: Vec2[] = [];
+  trail: TrailPoint[] = [];
   events: FlashEvent[] = [];
   private flyby = new Map<string, FlybyZone>();
   private stepCount = 0;
@@ -123,7 +129,11 @@ export class GameEngine {
     this.time += DT;
     this.stepCount++;
     if (this.stepCount % TRAIL_EVERY_STEPS === 0) {
-      this.trail.push(clone(this.probe.pos));
+      this.trail.push({
+        x: this.probe.pos.x,
+        y: this.probe.pos.y,
+        speed: len(this.probe.vel),
+      });
       if (this.trail.length > TRAIL_MAX) this.trail.shift();
     }
     const hit = findCollision(this.world);
