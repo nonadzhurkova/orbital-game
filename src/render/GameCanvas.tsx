@@ -5,12 +5,10 @@ import { makeLevel } from "@/game/levels";
 import { useGame } from "@/game/store";
 import { sound } from "@/game/sound";
 import { DT } from "@/physics/engine";
-import { Vec2, sub, scale, len, dist } from "@/physics/vec";
+import { Vec2, sub, scale, len, dist, norm } from "@/physics/vec";
 import { Camera } from "./camera";
-import { Starfield } from "./starfield";
-import { ParticlePool } from "./particles";
-import { drawScene, AimState, DV_PER_PX } from "./draw";
-import { norm } from "@/physics/vec";
+import { AimState, DV_PER_PX } from "./types";
+import type { PixiScene, FrameInput } from "./pixi/PixiScene";
 
 /** Max fixed steps per rendered frame (keeps 100x from freezing the tab). */
 const MAX_STEPS_PER_FRAME = 480;
@@ -44,13 +42,10 @@ export default function GameCanvas() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
 
     const engine = new GameEngine(makeLevel(levelIndex));
     const cam = new Camera();
-    const starfield = new Starfield(7 + levelIndex);
-    const particles = new ParticlePool();
+    let scene: PixiScene | null = null;
     let shakeFrames = 0;
     let winWallStart = 0;
     const pointers = new Map<number, Vec2>();
@@ -79,18 +74,17 @@ export default function GameCanvas() {
     const debug: OrbitalDebug = { fps: 60, bodies: 0, particles: 0, phase: "aiming" };
     window.__orbitalDebug = debug;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const host = canvas.parentElement ?? canvas;
     const resize = () => {
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
+      const w = host.clientWidth || canvas.clientWidth || 800;
+      const h = host.clientHeight || canvas.clientHeight || 600;
       cam.viewportW = w;
       cam.viewportH = h;
+      scene?.resize(w, h);
     };
     resize();
     const ro = new ResizeObserver(resize);
-    ro.observe(canvas);
+    ro.observe(host);
 
     // Initial camera: over the start body, level zoom scaled for small screens.
     cam.zoom = engine.level.zoom * Math.min(1, cam.viewportW / 900);
@@ -118,7 +112,7 @@ export default function GameCanvas() {
         aimIsBurn: !!pendingAim?.isBurn,
       });
 
-    /** Screen position of the pending aim arrow's tip (matches drawAim). */
+    /** Screen position of the pending aim arrow's tip (matches the arrow). */
     const aimTipScreen = (): Vec2 | null => {
       if (!pendingAim) return null;
       const dv = engine.clampDv(pendingAim.dv);
@@ -137,13 +131,13 @@ export default function GameCanvas() {
           if (engine.launch(dv)) {
             sound.launch();
             cam.following = true;
-            particles.burst(engine.probe.pos, norm(dv), 50, 55);
+            scene?.burst(engine.probe.pos, norm(dv), 50, 55);
           }
         } else if (pendingAim.isBurn && engine.phase === "flying" && engine.burnsLeft > 0) {
           if (engine.burn(dv)) {
             sound.burn();
             useGame.getState().setPaused(false);
-            particles.burst(engine.probe.pos, norm(dv), 36, 45);
+            scene?.burst(engine.probe.pos, norm(dv), 36, 45);
           }
         }
       }
@@ -291,6 +285,17 @@ export default function GameCanvas() {
     canvas.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("keydown", onKeyDown);
 
+    // One FrameInput object, mutated in place each frame.
+    const frameInput: FrameInput = {
+      cam,
+      engine,
+      wallTime: 0,
+      dt: 0,
+      aim: null,
+      winT: 0,
+      shake: 0,
+    };
+
     const frame = (now: number) => {
       if (disposed) return;
       raf = requestAnimationFrame(frame);
@@ -349,7 +354,6 @@ export default function GameCanvas() {
           shakeFrames = 6; // slingshot kick
         }
       }
-      particles.update(dtReal);
 
       // Live prediction for the active drag or the pending (set) aim.
       // Recompute rate adapts to the last prediction's cost so heavy levels
@@ -386,24 +390,19 @@ export default function GameCanvas() {
 
       cam.follow(engine.probe.pos);
 
-      // Draw (with a brief screen shake after slingshot kicks).
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = "#070b14";
-      ctx.fillRect(0, 0, cam.viewportW, cam.viewportH);
-      if (shakeFrames > 0) {
-        const k = shakeFrames / 6;
-        ctx.translate((Math.random() - 0.5) * 10 * k, (Math.random() - 0.5) * 10 * k);
-        shakeFrames--;
-      }
-      starfield.draw(ctx, cam, now / 1000);
-      const winT = winWallStart > 0 ? (now - winWallStart) / 1000 : 0;
-      drawScene(ctx, cam, engine, now / 1000, aim, winT);
-      particles.draw(ctx, cam);
+      // Hand the frame to the Pixi scene (shake decays over 6 frames).
+      frameInput.wallTime = now / 1000;
+      frameInput.dt = dtReal;
+      frameInput.aim = aim;
+      frameInput.winT = winWallStart > 0 ? (now - winWallStart) / 1000 : 0;
+      frameInput.shake = shakeFrames > 0 ? 10 * (shakeFrames / 6) : 0;
+      if (shakeFrames > 0) shakeFrames--;
+      scene?.render(frameInput);
 
       if (dtReal > 0) fpsSmoothed += (1 / dtReal - fpsSmoothed) * 0.05;
       debug.fps = fpsSmoothed;
       debug.bodies = engine.level.bodies.length;
-      debug.particles = particles.count;
+      debug.particles = scene?.particleCount ?? 0;
       debug.phase = engine.phase;
 
       // Mirror engine state into the store for the HUD (throttled).
@@ -421,7 +420,22 @@ export default function GameCanvas() {
         });
       }
     };
-    raf = requestAnimationFrame(frame);
+
+    // PixiJS 8 init is async; the render loop starts once the scene is up.
+    // (Import is dynamic so pixi.js never loads during SSR.)
+    (async () => {
+      const { PixiScene } = await import("./pixi/PixiScene");
+      const s = new PixiScene();
+      await s.init(canvas, engine.level, 7 + levelIndex);
+      if (disposed) {
+        s.destroy();
+        return;
+      }
+      scene = s;
+      s.resize(cam.viewportW, cam.viewportH);
+      lastT = performance.now();
+      raf = requestAnimationFrame(frame);
+    })();
 
     return () => {
       disposed = true;
@@ -434,6 +448,8 @@ export default function GameCanvas() {
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKeyDown);
+      scene?.destroy();
+      scene = null;
     };
   }, [levelIndex, resetNonce]);
 

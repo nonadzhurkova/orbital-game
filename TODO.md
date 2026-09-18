@@ -11,35 +11,42 @@
   win, lose). No volume control, no music.
 - **No tutorial** beyond the intro card and hint lines.
 
-## Performance notes (measured under devtools-style 4x CPU throttle,
-## headless Chrome 1280x800, scripts/perf.mjs)
-- Level 1: 60 fps idle and while aim-dragging. ✓ target met.
-- Level 5 (binary star, 4 dynamic bodies): 60 fps idle, ~51 fps while
-  holding an aim drag. Tradeoffs taken:
-  - Prediction runs at 2 integrator substeps (live sim uses 4) — a
-    dashed preview does not need full accuracy.
-  - Prediction recompute rate adapts (every 2nd–4th frame) to its own
-    measured cost, and the horizon degrades 60 s → 45 s → 30 s on slow
-    CPUs rather than dropping render frames.
-- Particles: fixed pool of 500, structure-of-arrays, zero allocations
-  per frame in update/draw. Trail points and prediction point arrays DO
-  allocate (bounded: ≤400 trail points at 30 Hz, prediction only while
-  dragging); acceptable in profiling, noted for a future pass.
+## Renderer (PixiJS 8, migrated from canvas 2D)
+- Scene renderer is `src/render/pixi/PixiScene.ts` behind the same
+  GameCanvas interface; physics/camera/input untouched. Bloom
+  (pixi-filters) on a glow layer holding the trail + probe.
+- One shared `Application` per canvas: tearing down a WebGL context and
+  re-initializing on the same canvas hangs the tab, so level switches
+  rebuild the scene graph on the live app (see `acquireApp`).
+- Bloom degradations: `?nobloom` URL flag, and the filter auto-drops
+  after ~1.5 s of sustained sub-48 fps.
+- Trail fade is approximated in chunks of 8 segments per stroke (~50
+  strokes/frame) instead of 400 per-segment strokes.
+- Starfield twinkle became a per-layer alpha "breath" (per-star twinkle
+  would need a shader; baked brightness covers most of the effect).
+
+## Performance notes (scripts/perf.mjs, 4x CPU throttle, headless
+## Chrome 1280x800 — NOTE: headless uses SwiftShader, so all "GPU" work
+## runs on the throttled CPU; real hardware GPUs render this scene and
+## the bloom far cheaper)
+- Pixi + bloom: level 1 ~55 idle / ~48 aim-drag; level 5 ~55 / ~40.
+- Pixi without bloom (NOBLOOM=1): ~56/53 and ~56/50.
+- Prediction tradeoffs (unchanged): 2 integrator substeps for the
+  preview, adaptive recompute rate, horizon degrades 60→45→30 s.
+- Particles: fixed pool of 500 pre-allocated sprites, SoA data, no
+  allocations per frame. Trail/prediction point arrays still allocate
+  (bounded), as before.
 - Number tweens (Δv readout, score count-up) intentionally use a
   duration+easeOut tween, not the shared spring — springs overshoot,
   which reads badly on numeric text. All movement/scale transitions use
   the shared SPRING from src/ui/motion.ts.
 
-## What would benefit from PixiJS / three.js (not migrating yet)
-- **Trail rendering**: 400 individual stroked segments per frame is the
-  biggest canvas cost; a PixiJS mesh/rope or a single WebGL line strip
-  with per-vertex color would make it near-free.
-- **Additive particle glow**: `globalCompositeOperation = "lighter"`
-  forces canvas state changes; WebGL blend modes + a texture atlas
-  would allow thousands of particles.
-- **Starfield twinkle** currently draws each star as a rect per frame;
-  a shader would do the whole field in one draw call.
-- Planet art, HUD, prediction dashes are cheap; no need.
+## Possible renderer follow-ups
+- Trail as a MeshRope / custom mesh with per-vertex color: exact
+  per-segment fade back, one draw call.
+- Per-star twinkle via a small fragment shader on the tile textures.
+- AdvancedBloomFilter (thresholded) would bloom only the bright core
+  at slightly higher cost than the plain BloomFilter used now.
 
 ## Ideas / next
 - Level select screen instead of the dots in the end-of-level dialog.
