@@ -273,6 +273,7 @@ export class GameEngine {
     const baseVel =
       this.phase === "aiming" ? add(this.startBody.vel, clamped) : add(this.probe.vel, clamped);
     const ghost: Body = { ...this.probe, pos: clone(this.probe.pos), vel: baseVel };
-    return predictTrajectory(this.world, ghost, seconds, 3);
+    // 2 substeps: half the cost of the live sim; plenty for a dashed preview.
+    return predictTrajectory(this.world, ghost, seconds, 3, 2);
   }
 }

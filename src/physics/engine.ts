@@ -95,6 +95,7 @@ export function predictTrajectory(
   probe: Body,
   seconds: number,
   sampleEvery = 2,
+  substeps: number = SUBSTEPS,
 ): TrajectoryResult {
   const sim = cloneWorld(world);
   sim.probe = cloneBody(probe);
@@ -103,7 +104,7 @@ export function predictTrajectory(
   let collided = false;
   let collidedWith: string | null = null;
   for (let i = 0; i < steps; i++) {
-    step(sim, DT);
+    step(sim, DT, substeps);
     const hit = findCollision(sim);
     if (hit) {
       collided = true;

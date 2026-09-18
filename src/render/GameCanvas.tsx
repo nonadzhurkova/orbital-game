@@ -67,6 +67,7 @@ export default function GameCanvas() {
     let prevPhase = engine.phase;
     let seenEventId = 0;
     let predictSkip = 0;
+    let predictCost = 0;
     let disposed = false;
     let fpsSmoothed = 60;
     // One shared debug object, mutated in place (no per-frame allocation).
@@ -245,15 +246,23 @@ export default function GameCanvas() {
       }
       particles.update(dtReal);
 
-      // Live prediction while dragging an aim (recomputed at ~30 Hz).
+      // Live prediction while dragging an aim. Recompute rate adapts to how
+      // long the last prediction took, so heavy levels stay at 60 fps.
       if (drag && (drag.mode === "aim" || drag.mode === "burn")) {
         const dv = dvFromDrag(drag);
-        if (!aim || predictSkip++ % 2 === 0) {
+        const skip = predictCost > 6 ? 4 : predictCost > 3 ? 3 : 2;
+        // Degrade the horizon on slow CPUs instead of dropping frames.
+        // (Rises fast on a slow prediction, recovers slowly to avoid flicker.)
+        const horizon = predictCost > 9 ? 30 : predictCost > 5 ? 45 : PREDICT_SECONDS;
+        if (!aim || predictSkip++ % skip === 0) {
+          const t0 = performance.now();
           aim = {
             dv,
-            prediction: engine.predict(dv, PREDICT_SECONDS),
+            prediction: engine.predict(dv, horizon),
             isBurn: drag.mode === "burn",
           };
+          const cost = performance.now() - t0;
+          predictCost = cost > predictCost ? cost : predictCost * 0.98 + cost * 0.02;
         } else {
           aim = { ...aim, dv };
         }
