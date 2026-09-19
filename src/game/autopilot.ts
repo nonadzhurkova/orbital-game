@@ -35,7 +35,6 @@ export interface AutopilotHooks {
 }
 
 interface Candidate {
-  wait: number;
   speed: number;
   /**
    * Launch direction parameter. Static levels: lateral aim offset past the
@@ -46,7 +45,7 @@ interface Candidate {
   aim: number;
 }
 
-type Mode = "planning" | "waiting" | "cruise" | "orbiting" | "failed";
+type Mode = "planning" | "cruise" | "orbiting" | "failed";
 
 /** Max ms of planning work per frame — keeps the UI responsive. */
 const PLAN_BUDGET_MS = 10;
@@ -69,7 +68,6 @@ export class Autopilot {
   private nearMisses: { cand: Candidate; closest: number }[] = [];
   private best: { cand: Candidate; total: number; tCp: number; closest: number } | null =
     null;
-  private launchAt = 0;
   /** Sim time when the capture burn should fire (from the chosen plan). */
   private burnAt = 0;
   /** Estimated sim seconds for the final winning orbit sweep. */
@@ -77,9 +75,12 @@ export class Autopilot {
   private chosen: Candidate | null = null;
   private prevD = Infinity;
   private burned = false;
-  /** Bodies-only world at plan time zero; wait states derive from it. */
+  /**
+   * Bodies-only world at plan time (aiming is frozen while a plan is being
+   * built, so this is simply "now" — no future-time scanning is possible or
+   * needed; the plan always launches immediately once found).
+   */
   private origin: World;
-  private waitSnapshots = new Map<number, World>();
 
   private movingLevel: boolean;
   private coarseCount = 0;
@@ -129,19 +130,17 @@ export class Autopilot {
         set.add(+(vFloor + (margin * i) / (nFine - 1)).toFixed(3));
     }
     const speeds = [...set].sort((a, b) => a - b);
-    // Waits must cover a meaningful fraction of the start body's orbital
-    // period so every phase angle to the target is reachable.
-    const waits = this.movingLevel ? this.waitGrid() : [0];
     // Static levels: lateral aim offsets in target radii (wide: a heavy body
     // in between — level 2 — bends shots far off the naive line). Moving
-    // levels: bearings from prograde; the wait grid handles phasing.
+    // levels: bearings from prograde — aiming is now frozen (no waiting for
+    // a transfer window), so whatever phase angle the bodies are at when
+    // the player starts aiming is the only one available; scan finely.
     const aims = this.movingLevel
-      ? [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60].map((d) => (d * Math.PI) / 180)
+      ? Array.from({ length: 37 }, (_, i) => ((i * 10 - 180) * Math.PI) / 180)
       : [-8, -6, -4.5, -3, -2, -1.2, 0, 1.2, 2, 3, 4.5, 6, 8];
     const out: Candidate[] = [];
-    for (const wait of waits)
-      for (const speed of speeds)
-        for (const aim of aims) out.push({ wait, speed, aim });
+    for (const speed of speeds)
+      for (const aim of aims) out.push({ speed, aim });
     return out;
   }
 
@@ -188,55 +187,7 @@ export class Autopilot {
     return Math.max(4, Math.abs(vT - vC) * 3.5);
   }
 
-  /**
-   * Wait offsets spanning the start body's orbital period (every phase angle
-   * to the target is reachable), with extra resolution in the first stretch
-   * where short-period levels find their windows.
-   */
-  private waitGrid(): number[] {
-    const level = this.engine.level;
-    const p = this.primary();
-    const startBody = this.engine.startBody;
-    let period = 48;
-    if (p) {
-      const r1 = dist(startBody.pos, p.center);
-      period = 2 * Math.PI * Math.sqrt(r1 ** 3 / (level.G * p.mass));
-    }
-    const set = new Set<number>();
-    for (let i = 0; i < 16; i++) set.add(Math.round((period * i) / 16));
-    for (const w of [0, 4, 8, 12, 16, 20, 24, 28, 32, 40]) {
-      if (w < period) set.add(w);
-    }
-    return [...set].sort((a, b) => a - b);
-  }
-
-  /**
-   * World with bodies advanced `wait` seconds past the plan's start state.
-   * Derives from the nearest earlier snapshot; substeps must match the live
-   * engine exactly (phasing errors compound over long waits).
-   */
-  private worldAtWait(wait: number): World {
-    const hit = this.waitSnapshots.get(wait);
-    if (hit) return hit;
-    let baseW = 0;
-    let baseWorld = this.origin;
-    for (const [w, s] of this.waitSnapshots) {
-      if (w <= wait && w > baseW) {
-        baseW = w;
-        baseWorld = s;
-      }
-    }
-    const world = cloneWorld(baseWorld);
-    let t = baseW;
-    while (t < wait - DT / 2) {
-      step(world, DT, 4);
-      t += DT;
-    }
-    this.waitSnapshots.set(wait, world);
-    return world;
-  }
-
-  /** The launch dv for a candidate, given the world state at its wait. */
+  /** The launch dv for a candidate, given the (frozen, current) world state. */
   private candidateDv(c: Candidate, world: World): { attach: Vec2; dv: Vec2 } {
     const level = this.engine.level;
     const start = world.bodies.find((b) => b.id === level.startBodyId)!;
@@ -269,7 +220,7 @@ export class Autopilot {
    */
   private evaluate(c: Candidate): { total: number | null; tCp: number; closest: number } | null {
     const level = this.engine.level;
-    const world = cloneWorld(this.worldAtWait(c.wait));
+    const world = cloneWorld(this.origin);
     const start = world.bodies.find((b) => b.id === level.startBodyId)!;
     const target = world.bodies.find((b) => b.id === level.targetBodyId)!;
     const { attach, dv } = this.candidateDv(c, world);
@@ -386,19 +337,16 @@ export class Autopilot {
       ? [-0.14, -0.07, 0, 0.07, 0.14]
       : [-0.8, -0.4, 0, 0.4, 0.8];
     for (const { cand } of seeds) {
-      for (const dw of cand.wait > 0 ? [-2, -1, 0, 1, 2] : [0]) {
-        for (const fs of [0.9, 0.95, 1, 1.05, 1.1]) {
-          for (const dAim of dAims) {
-            const c: Candidate = {
-              wait: Math.max(0, cand.wait + dw),
-              speed: cand.speed * fs,
-              aim: cand.aim + dAim,
-            };
-            const key = `${c.wait}|${c.speed.toFixed(2)}|${c.aim.toFixed(3)}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              out.push(c);
-            }
+      for (const fs of [0.9, 0.95, 1, 1.05, 1.1]) {
+        for (const dAim of dAims) {
+          const c: Candidate = {
+            speed: cand.speed * fs,
+            aim: cand.aim + dAim,
+          };
+          const key = `${c.speed.toFixed(2)}|${c.aim.toFixed(3)}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push(c);
           }
         }
       }
@@ -458,8 +406,9 @@ export class Autopilot {
           return;
         }
         this.chosen = this.best.cand;
-        this.launchAt = engine.time + this.chosen.wait;
-        this.burnAt = this.launchAt + this.best.tCp;
+        // Aiming is frozen, so the plan launches immediately — there is no
+        // future window to wait for; engine.time is still 0 at this point.
+        this.burnAt = this.best.tCp;
         // Winning still takes one full orbit after capture.
         this.orbitTime =
           2 *
@@ -469,38 +418,25 @@ export class Autopilot {
           ? `${Math.round((this.chosen.aim * 180) / Math.PI)}° off prograde`
           : `${this.chosen.aim.toFixed(1)}R aim offset`;
         this.hooks.log(
-          `Plan: ${this.chosen.wait > 0 ? `wait ${this.chosen.wait}s, ` : ""}launch ${(
-            this.chosen.speed * KMS
-          ).toFixed(1)} km/s ${aimTxt}; capture ≈ ${((this.best.total - this.chosen.speed) * KMS).toFixed(1)} km/s at r=${Math.round(
-            this.best.closest,
-          )}; total ${(this.best.total * KMS).toFixed(1)} km/s, solved in ~${Math.ceil(
-            this.chosen.wait + this.best.tCp + this.orbitTime,
-          )}s sim`,
+          `Plan: launch ${(this.chosen.speed * KMS).toFixed(1)} km/s ${aimTxt}; capture ≈ ${(
+            (this.best.total - this.chosen.speed) *
+            KMS
+          ).toFixed(1)} km/s at r=${Math.round(this.best.closest)}; total ${(
+            this.best.total * KMS
+          ).toFixed(1)} km/s, solved in ~${Math.ceil(this.best.tCp + this.orbitTime)}s sim`,
         );
-        this.mode = "waiting";
-        this.hooks.pause(false);
-        if (this.chosen.wait > 2) this.hooks.setSpeed(10);
-        return;
-      }
-      case "waiting": {
-        if (engine.phase !== "aiming") return;
-        const eta = Math.ceil(this.burnAt - engine.time + this.orbitTime);
-        const tMinus = Math.ceil(this.launchAt - engine.time);
-        this.status =
-          tMinus > 0 ? `launch in ${tMinus}s · solved in ~${eta}s` : "launching";
-        if (engine.time + DT / 2 < this.launchAt) return;
-        // Recompute the dv from the live state (deterministic sim: identical
-        // to the planned one) and go.
-        const { dv } = this.candidateDv(this.chosen!, engine.world);
-        this.hooks.setSpeed(1);
-        if (engine.launch(dv)) {
-          this.hooks.onLaunch(dv);
-          this.mode = "cruise";
-          this.status = "coasting";
-        } else {
-          this.status = "launch refused";
-          this.mode = "failed";
-          this.done = true;
+        {
+          const { dv } = this.candidateDv(this.chosen, engine.world);
+          this.hooks.pause(false);
+          if (engine.launch(dv)) {
+            this.hooks.onLaunch(dv);
+            this.mode = "cruise";
+            this.status = "coasting";
+          } else {
+            this.status = "launch refused";
+            this.mode = "failed";
+            this.done = true;
+          }
         }
         return;
       }
@@ -583,7 +519,7 @@ export class Autopilot {
   }
 
   /** Needed by tests: the picked plan. */
-  get plan(): { wait: number; speed: number; aim: number; total: number } | null {
+  get plan(): { speed: number; aim: number; total: number } | null {
     return this.best ? { ...this.best.cand, total: this.best.total } : null;
   }
 }

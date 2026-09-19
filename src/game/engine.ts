@@ -123,14 +123,10 @@ export class GameEngine {
   step() {
     if (this.phase === "won" || this.phase === "lost") return;
     if (this.phase === "aiming") {
-      // Planets keep moving; the probe rides the start body's surface.
-      const savedProbe = this.world.probe;
-      this.world.probe = null; // don't integrate the attached probe
-      step(this.world, DT);
-      this.world.probe = savedProbe;
-      this.attachProbe();
-      this.time += DT;
-      this.pruneEvents();
+      // The whole universe is frozen while aiming: planets don't move and
+      // engine.time doesn't advance, so the player can take as long as they
+      // like without the geometry (or any coast-checkpoint scan) going
+      // stale mid-thought. Time resumes the instant they launch.
       return;
     }
     // flying
@@ -336,5 +332,66 @@ export class GameEngine {
       }
       return closest > R * 1.8 && closest < R * 4.5;
     });
+  }
+
+  /**
+   * Scans a coasting trajectory forward and returns each local minimum of
+   * distance-to-target that falls in the same capture-eligible band
+   * viableSnaps uses — the moments worth pausing at for the mid-course
+   * burn: "next viable point along the projected orbit."
+   *
+   * Works in both aiming and flying phases:
+   *  - Aiming: pass the pending launch `dv` (relative to the start body,
+   *    same convention as predict()). The trajectory is a ghost from the
+   *    probe's current (attached) position, exactly like the dashed
+   *    prediction line — so these dots can be shown and picked BEFORE the
+   *    player commits the launch.
+   *  - Flying: omit `dv` to scan forward from the live probe state.
+   *
+   * `t` is an ABSOLUTE engine.time (this.time + offset), not a relative
+   * offset — the caller (or player) may act on a result after more time has
+   * passed, so a relative offset would silently go stale. If launched while
+   * a checkpoint from the aiming-phase scan is still selected, engine.time
+   * is 0 at commit, so the same absolute values remain valid landmarks
+   * along the now-live trajectory.
+   * Pure: simulates a clone, never touches the live world.
+   */
+  coastCheckpoints(dv?: Vec2, maxSeconds = 90): { t: number; pos: Vec2; dist: number }[] {
+    if (this.phase !== "aiming" && this.phase !== "flying") return [];
+    const t = this.targetBody;
+    const R = t.radius;
+    const sim = cloneWorld(this.world);
+    if (dv !== undefined) {
+      const clamped = this.clampDv(dv);
+      sim.probe = {
+        id: "probe",
+        pos: clone(this.probe.pos),
+        vel: add(this.startBody.vel, clamped),
+        mass: 0,
+        radius: PROBE_RADIUS,
+      };
+    }
+    const out: { t: number; pos: Vec2; dist: number }[] = [];
+    let prevD = dist(sim.probe!.pos, t.pos);
+    let falling = false;
+    const steps = Math.ceil(maxSeconds / DT);
+    const startTime = this.time;
+    for (let i = 0; i < steps; i++) {
+      step(sim, DT, 2);
+      if (findCollision(sim)) break;
+      if (len(sim.probe!.pos) > this.level.mapRadius) break;
+      const d = dist(sim.probe!.pos, t.pos);
+      if (d < prevD) {
+        falling = true;
+      } else if (falling) {
+        // Just passed a local minimum (prevD, one step back).
+        falling = false;
+        if (prevD > R * 1.8 && prevD < R * 4.5) {
+          out.push({ t: startTime + i * DT, pos: clone(sim.probe!.pos), dist: prevD });
+        }
+      }
+      prevD = d;
+    }
+    return out;
   }
 }

@@ -24,6 +24,10 @@ export interface OrbitalDebug {
   phase: string;
   /** Current aim magnitude in engine units, or null if not aiming. Test hook. */
   aimMag: number | null;
+  /** Number of coast checkpoints currently available. Test hook. */
+  checkpointCount: number;
+  /** Whether a checkpoint is currently armed. Test hook. */
+  checkpointArmed: boolean;
 }
 declare global {
   interface Window {
@@ -64,6 +68,12 @@ export default function GameCanvas() {
     let autopilot: Autopilot | null = null;
     let lastCommitNonce = useGame.getState().commitNonce;
     let lastClearNonce = useGame.getState().clearNonce;
+    // Selectable auto-pause points along the current coast (see
+    // "Select a burn point" below); recomputed periodically while flying.
+    let coastCheckpoints: { t: number; pos: Vec2; dist: number }[] = [];
+    let lastCheckpointRecompute = 0;
+    let lastSelectedCheckpointT = useGame.getState().selectedCheckpointT;
+    let armedCheckpointT: number | null = null;
     let raf = 0;
     let lastT = performance.now();
     let accumulator = 0;
@@ -82,7 +92,15 @@ export default function GameCanvas() {
     let disposed = false;
     let fpsSmoothed = 60;
     // One shared debug object, mutated in place (no per-frame allocation).
-    const debug: OrbitalDebug = { fps: 60, bodies: 0, particles: 0, phase: "aiming", aimMag: null };
+    const debug: OrbitalDebug = {
+      fps: 60,
+      bodies: 0,
+      particles: 0,
+      phase: "aiming",
+      aimMag: null,
+      checkpointCount: 0,
+      checkpointArmed: false,
+    };
     window.__orbitalDebug = debug;
 
     const host = canvas.parentElement ?? canvas;
@@ -227,6 +245,22 @@ export default function GameCanvas() {
         return;
       }
       const st = useGame.getState();
+
+      // Select-a-burn-point: tapping a checkpoint marker (while coasting,
+      // burn still available, not already paused for a manual burn) arms
+      // an auto-pause instead of starting a drag.
+      if (engine.phase === "flying" && !st.paused && engine.burnsLeft > 0 && scene) {
+        for (const cp of scene.lastCheckpointScreens) {
+          if (dist(p, cp.screen) < 16) {
+            const already =
+              st.selectedCheckpointT !== null &&
+              Math.abs(cp.t - st.selectedCheckpointT) < 1e-6;
+            useGame.getState().selectCheckpoint(already ? null : cp.t);
+            return;
+          }
+        }
+      }
+
       const nearProbe = dist(p, screenOfProbe()) < 48;
       const tip = aimTipScreen();
       const nearTip = tip !== null && dist(p, tip) < 32;
@@ -351,6 +385,8 @@ export default function GameCanvas() {
       aim: null,
       winT: 0,
       shake: 0,
+      checkpoints: [],
+      selectedCheckpointT: null,
     };
 
     const frame = (now: number) => {
@@ -415,11 +451,58 @@ export default function GameCanvas() {
         autopilot = null;
       }
 
-      // Fixed-timestep accumulator, scaled by the speed multiplier.
+      // "Select a burn point" dots: shown as a preview along the predicted
+      // path from the moment the player starts aiming (so they can be seen
+      // before committing the launch), and remain selectable to auto-pause
+      // once actually flying. Not selectable during aiming — the trajectory
+      // is still hypothetical and changes on every drag, so any "armed"
+      // pick would be meaningless until the launch is real.
+      let checkpointSource: Vec2 | undefined | "flying" = undefined;
+      if (engine.phase === "flying" && engine.burnsLeft > 0 && !pendingAim) {
+        checkpointSource = "flying";
+      } else if (engine.phase === "aiming") {
+        const previewDv = pendingAim?.dv ?? (drag && drag.mode === "aim" ? dvFromDrag(drag) : null);
+        if (previewDv && len(previewDv) > 1) checkpointSource = engine.clampDv(previewDv);
+      }
+      if (checkpointSource !== undefined && now - lastCheckpointRecompute > 400) {
+        lastCheckpointRecompute = now;
+        coastCheckpoints =
+          checkpointSource === "flying"
+            ? engine.coastCheckpoints()
+            : engine.coastCheckpoints(checkpointSource);
+        useGame.getState().syncFromEngine({ coastCheckpoints });
+      } else if (checkpointSource === undefined && coastCheckpoints.length > 0) {
+        coastCheckpoints = [];
+        useGame.getState().syncFromEngine({ coastCheckpoints: [] });
+      }
+      // Only a live "flying" scan can be armed for auto-pause — see above.
+      if (engine.phase !== "flying" && st.selectedCheckpointT !== null) {
+        useGame.getState().selectCheckpoint(null);
+      }
+      if (st.selectedCheckpointT !== lastSelectedCheckpointT) {
+        lastSelectedCheckpointT = st.selectedCheckpointT;
+        // selectedCheckpointT is already an absolute engine.time (see
+        // GameEngine.coastCheckpoints) — no need to offset by "now".
+        armedCheckpointT = st.selectedCheckpointT;
+      }
+
+      // Fixed-timestep accumulator, scaled by the speed multiplier. If a
+      // checkpoint is armed, step only up to it this frame and pause there
+      // instead of overshooting past the chosen burn point.
       if (!st.paused) {
         accumulator += dtReal * st.speed;
         let steps = 0;
         while (accumulator >= DT && steps < MAX_STEPS_PER_FRAME) {
+          if (armedCheckpointT !== null && engine.time + DT / 2 >= armedCheckpointT) {
+            armedCheckpointT = null;
+            useGame.getState().selectCheckpoint(null);
+            useGame.getState().setPaused(true);
+            useGame
+              .getState()
+              .pushLog(engine.time, "sys", "Reached the selected point — paused for the burn");
+            accumulator = 0;
+            break;
+          }
           engine.step();
           accumulator -= DT;
           steps++;
@@ -545,6 +628,8 @@ export default function GameCanvas() {
       frameInput.aim = aim;
       frameInput.winT = winWallStart > 0 ? (now - winWallStart) / 1000 : 0;
       frameInput.shake = shakeFrames > 0 ? 10 * (shakeFrames / 6) : 0;
+      frameInput.checkpoints = coastCheckpoints;
+      frameInput.selectedCheckpointT = armedCheckpointT !== null ? st.selectedCheckpointT : null;
       if (shakeFrames > 0) shakeFrames--;
       scene?.render(frameInput);
 
@@ -554,6 +639,8 @@ export default function GameCanvas() {
       debug.particles = scene?.particleCount ?? 0;
       debug.phase = engine.phase;
       debug.aimMag = aim ? len(aim.dv) : null;
+      debug.checkpointCount = coastCheckpoints.length;
+      debug.checkpointArmed = armedCheckpointT !== null;
 
       // Mirror engine state into the store for the HUD (throttled).
       if (now - lastSync > 120) {

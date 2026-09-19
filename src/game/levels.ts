@@ -12,7 +12,17 @@ export interface BodyStyle {
   rotSpeed: number;
 }
 
-export type LevelBody = Body & { name: string; style: BodyStyle };
+export type LevelBody = Body & {
+  name: string;
+  style: BodyStyle;
+  /**
+   * What this body orbits, for drawing a static orbit-path ring: either the
+   * id of a single real body, or (for a circumbinary orbit) the ids of the
+   * two+ bodies whose combined mass/position forms the barycenter it
+   * actually orbits.
+   */
+  orbits?: string | string[];
+};
 
 export interface Level {
   id: string;
@@ -40,17 +50,22 @@ export const KMS = 0.1;
 
 /** Place a body on a circular counter-clockwise orbit around a parent. */
 function onOrbit(
-  parent: { pos: Vec2; vel: Vec2; mass: number },
+  parent: {
+    id: string | string[];
+    pos: Vec2;
+    vel: Vec2;
+    mass: number;
+  },
   G: number,
   r: number,
   angle: number,
-  body: Omit<LevelBody, "pos" | "vel">,
+  body: Omit<LevelBody, "pos" | "vel" | "orbits">,
 ): LevelBody {
   const pos = add(parent.pos, fromAngle(angle, r));
   const speed = circularOrbitSpeed(G, parent.mass, r);
   // Velocity perpendicular to the radius (CCW), plus the parent's velocity.
   const vel = add(parent.vel, fromAngle(angle + Math.PI / 2, speed));
-  return { ...body, pos, vel, dynamic: true };
+  return { ...body, pos, vel, dynamic: true, orbits: parent.id };
 }
 
 const rock = (base: string, accent: string, rotSpeed = 0.05): BodyStyle => ({
@@ -277,7 +292,7 @@ function level5(): Level {
     style: star("#8ecbff", "#4a9fe8"),
   };
   // Circumbinary planets: treat the pair as one mass at the barycenter.
-  const pair = { pos: vec(0, 0), vel: vec(0, 0), mass: 2 * m };
+  const pair = { id: ["starA", "starB"], pos: vec(0, 0), vel: vec(0, 0), mass: 2 * m };
   const bodies = [
     starA,
     starB,
@@ -288,9 +303,10 @@ function level5(): Level {
       radius: 28,
       style: rock("#9e9689", "#6e675c"),
     }),
-    // Phase chosen so the two planets' momenta are antiparallel — keeps the
-    // system's barycenter (and the binary pair) from drifting.
-    onOrbit(pair, G, 2100, 2.04, {
+    // Phase chosen so a direct transfer window exists right away — aiming
+    // is frozen (no "wait for the window"), so the launch has to work from
+    // wherever the planets start.
+    onOrbit(pair, G, 2100, 2.094, {
       id: "target",
       name: "Solace",
       mass: 5e4,

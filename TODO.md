@@ -1,5 +1,41 @@
 # Orbital Golf — TODO / stubs
 
+## Frozen aiming + orbit rings + selectable burn checkpoints
+- **Aiming now fully freezes the universe** (`GameEngine.step()` is a
+  no-op in the "aiming" phase — planets don't move, engine.time doesn't
+  advance). Previously planets kept orbiting while you dragged, which
+  made checkpoint/prediction math go stale the longer you deliberated.
+  This also means **there is no more "wait for a transfer window"
+  during aiming** — levels 4-5 launch from whatever phase angle the
+  bodies are frozen at when you start aiming. Level 5's target orbit
+  angle was moved from 2.04 to 2.094 rad because the old angle sat in
+  an 80-100° dead zone with no solvable direct transfer at wait=0 (see
+  the angle sweep in the commit that made this change).
+- **Static orbit-path rings** (`orbitalShape()` in physics/engine.ts,
+  drawn once in PixiScene's `buildOrbitPaths()`): a faint ellipse per
+  body with an `orbits` relationship (set by `onOrbit()` in levels.ts).
+  Needed once aiming froze — orbital motion was the only way to see
+  that a body orbits anything, and freezing removed that entirely.
+  `orbits` can be a single body id or an array (level 5's planets
+  orbit the binary barycenter, not either star alone).
+- **Selectable coast checkpoints** (`GameEngine.coastCheckpoints()`):
+  local minima of distance-to-target along a trajectory that fall in
+  the same capture band `viableSnaps` uses. Shown as preview dots along
+  the predicted path from the moment you start aiming (informational
+  only — the trajectory is still hypothetical pre-launch and changes
+  on every drag), and become clickable once actually flying: tapping
+  one arms an auto-pause so the sim stops exactly there for the
+  mid-course burn instead of needing to catch the moment manually.
+  Returned `t` values are absolute `engine.time`, not offsets — a
+  relative offset would go stale between computation and the player
+  acting on it.
+- **Autopilot simplified**: the whole `wait`-scanning dimension
+  (Candidate.wait, waitGrid(), worldAtWait(), the "waiting" mode) was
+  removed since there's no future window to scan for anymore — a plan
+  now launches immediately once found. This also made the whole test
+  suite ~6x faster (was 60s+, now ~10s) since wait-scanning was by far
+  the most expensive part of planning.
+
 ## Stubbed or simplified
 - **Par values for levels 2–5 are estimates.** Only level 1 has a
   test-verified solution cost (93.4 Δv vs par 100). Levels 2–5 have

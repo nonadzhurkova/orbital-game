@@ -59,6 +59,14 @@ interface GameState {
   } | null;
   /** Persistent per-attempt flight log: every maneuver and calculation. */
   log: LogEntry[];
+  /**
+   * Candidate moments along the current coast where the probe is in the
+   * capture band and a burn would make sense — the render loop populates
+   * this from GameEngine.coastCheckpoints() while flying.
+   */
+  coastCheckpoints: { t: number; pos: { x: number; y: number }; dist: number }[];
+  /** Sim time (engine.time) the player picked to auto-pause at, or null. */
+  selectedCheckpointT: number | null;
 
   setLevel: (i: number) => void;
   nextLevel: () => void;
@@ -72,6 +80,8 @@ interface GameState {
   clearAim: () => void;
   toggleAutoPilot: () => void;
   pushLog: (t: number, source: LogEntry["source"], text: string) => void;
+  /** Pick a checkpoint to auto-pause at (or null to cancel the pick). */
+  selectCheckpoint: (t: number | null) => void;
   /** Called by the render loop to mirror engine state into React. */
   syncFromEngine: (s: Partial<GameState>) => void;
 }
@@ -99,6 +109,8 @@ export const useGame = create<GameState>((set, get) => ({
   autoStatus: "",
   telemetry: null,
   log: [],
+  coastCheckpoints: [],
+  selectedCheckpointT: null,
 
   setLevel: (i) => {
     const clamped = Math.max(0, Math.min(LEVELS.length - 1, i));
@@ -109,6 +121,8 @@ export const useGame = create<GameState>((set, get) => ({
       paused: false,
       speed: 1,
       log: [],
+      coastCheckpoints: [],
+      selectedCheckpointT: null,
     }));
   },
   nextLevel: () => {
@@ -116,7 +130,14 @@ export const useGame = create<GameState>((set, get) => ({
     if (levelIndex < LEVELS.length - 1) setLevel(levelIndex + 1);
   },
   retry: () =>
-    set((s) => ({ resetNonce: s.resetNonce + 1, paused: false, speed: 1, log: [] })),
+    set((s) => ({
+      resetNonce: s.resetNonce + 1,
+      paused: false,
+      speed: 1,
+      log: [],
+      coastCheckpoints: [],
+      selectedCheckpointT: null,
+    })),
   setSpeed: (speed) => set({ speed }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setPaused: (paused) => set({ paused }),
@@ -129,5 +150,6 @@ export const useGame = create<GameState>((set, get) => ({
     set((s) => ({
       log: [...s.log.slice(-79), { id: nextLogId++, t, source, text }],
     })),
+  selectCheckpoint: (t) => set({ selectedCheckpointT: t }),
   syncFromEngine: (s) => set(s),
 }));

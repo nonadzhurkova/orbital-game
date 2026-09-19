@@ -147,6 +147,51 @@ export function orbitalElements(probe: Body, body: Body, G: number): OrbitalElem
   return { a, e, energy, periapsis, apoapsis, bound };
 }
 
+export interface OrbitalShape {
+  /** World-space center of the ellipse (NOT the focus — bodies orbit the focus). */
+  center: Vec2;
+  semiMajor: number;
+  semiMinor: number;
+  /** Rotation of the ellipse's major axis, radians. */
+  rotation: number;
+  bound: boolean;
+}
+
+/**
+ * Full ellipse geometry of `body`'s orbit around `focus` (two-body,
+ * instantaneous) — for drawing a static orbit-path ring, unlike
+ * orbitalElements() which only reports scalar periapsis/apoapsis/etc.
+ * Unbound (hyperbolic/parabolic) orbits return bound: false; the caller
+ * should skip drawing a ring in that case.
+ */
+export function orbitalShape(body: Body, focus: Body, G: number): OrbitalShape {
+  const mu = G * focus.mass;
+  const r = sub(body.pos, focus.pos);
+  const v = sub(body.vel, focus.vel);
+  const rlen = len(r);
+  const v2 = len2(v);
+  const energy = v2 / 2 - mu / rlen;
+  const h = cross(r, v);
+  const rv = dot(r, v);
+  const ex = ((v2 - mu / rlen) * r.x - rv * v.x) / mu;
+  const ey = ((v2 - mu / rlen) * r.y - rv * v.y) / mu;
+  const e = Math.hypot(ex, ey);
+  const bound = energy < 0;
+  if (!bound) {
+    return { center: focus.pos, semiMajor: 0, semiMinor: 0, rotation: 0, bound: false };
+  }
+  const a = -mu / (2 * energy);
+  const c = a * e; // focus-to-center distance
+  const semiMinor = a * Math.sqrt(Math.max(0, 1 - e * e));
+  const periapsisAngle = e > 1e-6 ? Math.atan2(ey, ex) : 0;
+  // Center sits on the far side of the focus from periapsis, at distance c.
+  const center = {
+    x: focus.pos.x - Math.cos(periapsisAngle) * c,
+    y: focus.pos.y - Math.sin(periapsisAngle) * c,
+  };
+  return { center, semiMajor: a, semiMinor, rotation: periapsisAngle, bound: true };
+}
+
 /** Speed of a circular orbit of radius `r` around a mass `m`. */
 export function circularOrbitSpeed(G: number, m: number, r: number): number {
   return Math.sqrt((G * m) / r);

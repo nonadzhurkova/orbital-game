@@ -165,6 +165,21 @@ export default function HUD() {
             <div className="rounded-xl bg-amber-400/20 px-4 py-2 text-center text-xs text-amber-100 backdrop-blur-sm sm:text-sm">
               Paused — drag from the probe to set your one mid-course burn.
             </div>
+          ) : s.phase === "flying" &&
+            !s.paused &&
+            s.selectedCheckpointT !== null &&
+            s.burnsLeft > 0 ? (
+            <div className="rounded-xl bg-sky-400/20 px-4 py-2 text-center text-xs text-sky-100 backdrop-blur-sm sm:text-sm">
+              Coasting to the selected point — will auto-pause there for the burn.
+              Tap it again to cancel.
+            </div>
+          ) : s.phase === "flying" &&
+            !s.paused &&
+            s.coastCheckpoints.length > 0 &&
+            s.burnsLeft > 0 ? (
+            <div className="rounded-xl bg-black/45 px-4 py-2 text-center text-xs text-white/70 backdrop-blur-sm sm:text-sm">
+              Tap a blue dot on the path to auto-pause there for the burn.
+            </div>
           ) : null}
         </div>
         <div className="flex items-end justify-between gap-2">

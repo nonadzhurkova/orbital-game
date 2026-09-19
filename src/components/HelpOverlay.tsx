@@ -86,6 +86,11 @@ export default function HelpOverlay({
 
               <Section title="Aim & launch">
                 <p>
+                  Time is frozen while you aim — planets stop, so take as long
+                  as you like. Faint rings show each planet&apos;s orbit path
+                  for reference even though nothing&apos;s moving.
+                </p>
+                <p>
                   <b>Drag from the probe</b>: direction = launch direction, length =
                   Δv. Releasing <i>sets</i> the aim — nothing flies yet.
                 </p>
@@ -109,6 +114,11 @@ export default function HelpOverlay({
                   Once per level, while flying: <b>pause</b>, then drag from the
                   probe to set a correction burn — same controls, same commit. Most
                   levels expect you to capture into orbit with it.
+                </p>
+                <p>
+                  While coasting toward the target, blue dots mark upcoming
+                  moments worth burning at. Tap one to auto-pause exactly
+                  there instead of timing it yourself; tap it again to cancel.
                 </p>
               </Section>
 
@@ -175,9 +185,8 @@ export default function HelpOverlay({
                     <IconOrbit size={14} />
                   </span>{" "}
                   and watch the computer solve the level: it simulates candidate
-                  launches, waits for a transfer window on moving levels, then
-                  flies and circularizes with the mid-course burn. Press again to
-                  take back control.
+                  launches from right now, then flies and circularizes with the
+                  mid-course burn. Press again to take back control.
                 </p>
               </Section>
 

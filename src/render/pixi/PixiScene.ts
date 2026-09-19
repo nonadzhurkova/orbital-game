@@ -13,8 +13,9 @@ import type { GameEngine, FlashEvent } from "@/game/engine";
 import type { AimState } from "../types";
 import { DV_PER_PX, DV_SNAP } from "../types";
 import { Level, LevelBody, PROBE_RADIUS, KMS } from "@/game/levels";
-import { len } from "@/physics/vec";
-import type { TrajectoryResult } from "@/physics/types";
+import { len, type Vec2 } from "@/physics/vec";
+import type { TrajectoryResult, Body } from "@/physics/types";
+import { orbitalShape } from "@/physics/engine";
 import { PixiParticles } from "./particles";
 import { dashedCircle } from "./shapes";
 import { radialGlowTexture, starTileTexture, STAR_TILE } from "./textures";
@@ -29,6 +30,10 @@ export interface FrameInput {
   winT: number;
   /** Screen-shake magnitude in px (0 = none). */
   shake: number;
+  /** Selectable auto-pause points along the current coast (world-space). */
+  checkpoints: { t: number; pos: Vec2; dist: number }[];
+  /** engine.time offset of the currently-armed checkpoint, or null. */
+  selectedCheckpointT: number | null;
 }
 
 const cssHex = (s: string): number => parseInt(s.replace("#", ""), 16);
@@ -134,6 +139,7 @@ export class PixiScene {
   private winRingsRoot = new Container();
   private prediction = new Graphics();
   private flightPath = new Graphics();
+  private orbitPaths = new Container();
   private glowLayer = new Container();
   private trail = new Graphics();
   private probeRoot = new Container();
@@ -148,6 +154,9 @@ export class PixiScene {
   private flashLayer = new Container();
   private indicatorTarget!: { root: Container; tri: Graphics; label: Text };
   private indicatorProbe!: { root: Container; tri: Graphics; label: Text };
+  private checkpointGfx = new Graphics();
+  /** Screen positions of the last-drawn checkpoints, for hit-testing clicks. */
+  lastCheckpointScreens: { t: number; screen: Vec2 }[] = [];
 
   // Caches to avoid needless rebuilds.
   private zoomAtLastBuild = 0;
@@ -190,6 +199,7 @@ export class PixiScene {
 
     this.shakeRoot.addChild(this.world);
     this.world.addChild(this.boundary);
+    this.world.addChild(this.orbitPaths);
     this.world.addChild(this.flightPath);
     this.world.addChild(this.bodiesLayer);
     this.world.addChild(this.winRingsRoot);
@@ -200,6 +210,7 @@ export class PixiScene {
     for (const body of this.level.bodies) {
       this.bodyViews.push(this.buildBody(body));
     }
+    this.buildOrbitPaths();
 
     // Win rings (hidden until a win).
     for (let i = 0; i < 3; i++) {
@@ -230,6 +241,7 @@ export class PixiScene {
 
     // Screen-space UI.
     stage.addChild(this.ui);
+    this.ui.addChild(this.checkpointGfx);
     this.ui.addChild(this.aimGfx);
     this.aimLabel = new Text({
       text: "",
@@ -348,6 +360,65 @@ export class PixiScene {
 
     this.bodiesLayer.addChild(root);
     return { body, root, detail, rotOffset: hashish(body.id) * Math.PI * 2, captureRing };
+  }
+
+  /**
+   * Static faint ellipse for each body's `orbits` relationship — visible
+   * reference geometry now that the universe freezes while aiming and
+   * orbital motion is otherwise invisible during that phase. Computed once
+   * from each body's initial state (levels author near-circular orbits, so
+   * this stays accurate for the whole level; it's a reference ring, not a
+   * live physics readout — the trail/telemetry cover that).
+   */
+  private buildOrbitPaths() {
+    const byId = new Map(this.level.bodies.map((b) => [b.id, b] as const));
+    for (const body of this.level.bodies) {
+      if (!body.orbits) continue;
+      const focus = this.resolveFocus(body.orbits, byId);
+      if (!focus) continue;
+      const shape = orbitalShape(body, focus, this.level.G);
+      if (!shape.bound || shape.semiMajor <= 0) continue;
+      const g = new Graphics();
+      g.ellipse(0, 0, shape.semiMajor, shape.semiMinor).stroke({
+        width: 1,
+        color: 0xffffff,
+        alpha: 0.1,
+      });
+      g.position.set(shape.center.x, shape.center.y);
+      g.rotation = shape.rotation;
+      this.orbitPaths.addChild(g);
+    }
+  }
+
+  /** Combined-mass "focus" body for one `orbits` entry (single id or a
+   *  multi-body barycenter like level 5's binary pair). */
+  private resolveFocus(
+    orbits: string | string[],
+    byId: Map<string, LevelBody>,
+  ): Body | null {
+    const ids = Array.isArray(orbits) ? orbits : [orbits];
+    let mass = 0;
+    let cx = 0;
+    let cy = 0;
+    let vx = 0;
+    let vy = 0;
+    for (const id of ids) {
+      const b = byId.get(id);
+      if (!b) continue;
+      mass += b.mass;
+      cx += b.pos.x * b.mass;
+      cy += b.pos.y * b.mass;
+      vx += b.vel.x * b.mass;
+      vy += b.vel.y * b.mass;
+    }
+    if (mass <= 0) return null;
+    return {
+      id: "__focus",
+      pos: { x: cx / mass, y: cy / mass },
+      vel: { x: vx / mass, y: vy / mass },
+      mass,
+      radius: 0,
+    };
   }
 
   /** Rebuild the world-space dashed shapes whose stroke width tracks zoom. */
@@ -472,6 +543,7 @@ export class PixiScene {
 
     this.drawFlightPath(engine, zoom, wallTime);
     this.drawTrail(engine, zoom);
+    this.drawCheckpoints(cam, engine, f.checkpoints, f.selectedCheckpointT, wallTime);
     this.drawPrediction(aim, zoom);
     this.drawProbe(engine, zoom, wallTime);
     this.particles.update(f.dt, zoom);
@@ -521,6 +593,38 @@ export class PixiScene {
         color: trailColor(mid.speed),
         alpha: (0.65 * i) / trail.length,
         cap: "round",
+      });
+    }
+  }
+
+  /**
+   * Selectable markers along the current coast where the probe passes
+   * through the capture band — "next viable point along the projected
+   * orbit." The nearest one to selectedCheckpointT (if any) is armed and
+   * pulses; GameCanvas hit-tests clicks against lastCheckpointScreens.
+   */
+  private drawCheckpoints(
+    cam: Camera,
+    engine: GameEngine,
+    checkpoints: { t: number; pos: Vec2; dist: number }[],
+    selectedT: number | null,
+    wallTime: number,
+  ) {
+    const g = this.checkpointGfx;
+    g.clear();
+    this.lastCheckpointScreens = [];
+    if (checkpoints.length === 0) return;
+    const pulse = 0.7 + 0.3 * Math.sin(wallTime * 5);
+    for (const cp of checkpoints) {
+      const s = cam.toScreen(cp.pos);
+      this.lastCheckpointScreens.push({ t: cp.t, screen: s });
+      const armed = selectedT !== null && Math.abs(cp.t - selectedT) < 1e-6;
+      const color = armed ? 0xffc85a : 0x8cb4ff;
+      g.circle(s.x, s.y, armed ? 6 * pulse : 5).fill({ color, alpha: armed ? 1 : 0.55 });
+      g.circle(s.x, s.y, armed ? 11 : 9).stroke({
+        width: 1.4,
+        color,
+        alpha: armed ? 0.9 : 0.4,
       });
     }
   }
