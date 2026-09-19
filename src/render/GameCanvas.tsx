@@ -78,7 +78,11 @@ export default function GameCanvas() {
     // real checkpoint can vanish for one or two 400ms ticks and reappear —
     // hold the last dots briefly instead of blinking them out immediately.
     let lastCheckpointsFoundAt = 0;
-    const CHECKPOINT_HOLD_MS = 1200;
+    // Short enough that a deliberate tap almost always lands on
+    // freshly-confirmed data (selection only works while flying — see the
+    // pointerdown handler below — so a stale hold can't be tapped during
+    // the aiming preview at all).
+    const CHECKPOINT_HOLD_MS = 500;
     let lastSelectedCheckpointT = useGame.getState().selectedCheckpointT;
     let armedCheckpointT: number | null = null;
     let raf = 0;
