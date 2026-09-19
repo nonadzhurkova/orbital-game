@@ -22,6 +22,8 @@ export interface OrbitalDebug {
   bodies: number;
   particles: number;
   phase: string;
+  /** Current aim magnitude in engine units, or null if not aiming. Test hook. */
+  aimMag: number | null;
 }
 declare global {
   interface Window {
@@ -80,7 +82,7 @@ export default function GameCanvas() {
     let disposed = false;
     let fpsSmoothed = 60;
     // One shared debug object, mutated in place (no per-frame allocation).
-    const debug: OrbitalDebug = { fps: 60, bodies: 0, particles: 0, phase: "aiming" };
+    const debug: OrbitalDebug = { fps: 60, bodies: 0, particles: 0, phase: "aiming", aimMag: null };
     window.__orbitalDebug = debug;
 
     const host = canvas.parentElement ?? canvas;
@@ -172,16 +174,39 @@ export default function GameCanvas() {
       syncAim();
     };
 
-    const dvFromDrag = (d: DragState): Vec2 => {
-      // Drag direction = launch direction; length = delta-v, snapped to
-      // round steps so the player lands on a value instead of hunting for
-      // an exact pixel. Direction stays continuous — orbital timing rewards
-      // precise angles, and arrow keys already cover fine angle control.
+    /** Raw (unsnapped) drag vector: direction = launch direction, length = delta-v. */
+    const rawDvFromDrag = (d: DragState): Vec2 => {
       const p = screenOfProbe();
-      const raw = scale(sub(d.current, p), DV_PER_PX);
+      return scale(sub(d.current, p), DV_PER_PX);
+    };
+
+    /**
+     * Snapped drag vector for aiming/prediction. Magnitude snaps to the
+     * nearest VIABLE dot (a magnitude that actually reaches a usable close
+     * approach on this heading — see snapDots below) within catch range;
+     * direction is never snapped — arrow keys cover fine angle control, and
+     * orbital timing rewards a precise heading. Away from any viable dot the
+     * drag still snaps to the plain 0.5 km/s grid, so it stays predictable
+     * rather than going loose. snapDots is computed from the RAW direction
+     * each frame (see below) so this snap can't feed back on itself.
+     */
+    const dvFromDrag = (d: DragState): Vec2 => {
+      const raw = rawDvFromDrag(d);
       const mag = len(raw);
       if (mag < 1e-6) return raw;
-      const snapped = Math.round(mag / DV_SNAP) * DV_SNAP;
+      let snapped = Math.round(mag / DV_SNAP) * DV_SNAP;
+      // Catch radius: pulls the drag onto a nearby viable dot rather than
+      // requiring pixel-perfect placement on it.
+      const CATCH = DV_SNAP * 1.5;
+      let bestDist = CATCH;
+      for (const dot of snapDots) {
+        if (!dot.viable) continue;
+        const dd = Math.abs(dot.mag - mag);
+        if (dd < bestDist) {
+          bestDist = dd;
+          snapped = dot.mag;
+        }
+      }
       return engine.clampDv(scale(raw, snapped / mag));
     };
 
@@ -444,10 +469,44 @@ export default function GameCanvas() {
         }
       }
 
+      // Snap-dot ladder: recomputed from the RAW (unsnapped) drag direction
+      // so it can't feed back on its own output (dvFromDrag below reads
+      // whatever snapDots this produces to decide the actual snapped
+      // magnitude). Only when the raw direction has turned meaningfully and
+      // at most a few times a second — each dot is a real short simulation,
+      // unlike the single cached prediction line.
+      const isAimDrag = drag !== null && drag.mode !== "pan";
+      if (isAimDrag) {
+        const raw = rawDvFromDrag(drag!);
+        const mag = len(raw);
+        if (mag > 1e-6 && now - lastSnapWallT > 180) {
+          const dir = { x: raw.x / mag, y: raw.y / mag };
+          const turned =
+            !lastSnapDir || Math.hypot(dir.x - lastSnapDir.x, dir.y - lastSnapDir.y) > 0.02;
+          if (turned) {
+            lastSnapWallT = now;
+            lastSnapDir = dir;
+            // Cap the scan: each candidate is a real short sim, so bound the
+            // per-recompute cost regardless of how large the budget is.
+            const MAX_DOTS = 24;
+            const mags: number[] = [];
+            for (
+              let m = DV_SNAP;
+              m <= engine.deltaVRemaining && mags.length < MAX_DOTS;
+              m += DV_SNAP
+            )
+              mags.push(m);
+            const viable = engine.viableSnaps(dir, mags);
+            snapDots = mags.map((m, i) => ({ mag: m, viable: viable[i] }));
+          }
+        }
+      } else {
+        lastSnapDir = null;
+      }
+
       // Live prediction for the active drag or the pending (set) aim.
       // Recompute rate adapts to the last prediction's cost so heavy levels
       // stay at 60 fps; a frozen world reuses the cached prediction.
-      const isAimDrag = drag !== null && drag.mode !== "pan";
       const source = isAimDrag
         ? { dv: dvFromDrag(drag!), isBurn: drag!.mode === "burn" }
         : pendingAim
@@ -474,36 +533,8 @@ export default function GameCanvas() {
         } else {
           aim = { ...aim, dv: source.dv, isBurn: source.isBurn, snapDots };
         }
-
-        // Recompute the snap-dot ladder only when the direction has turned
-        // meaningfully and at most a few times a second — each dot is a
-        // real short simulation, unlike the single cached prediction line.
-        const mag = len(source.dv);
-        if (mag > 1e-6 && now - lastSnapWallT > 180) {
-          const dir = { x: source.dv.x / mag, y: source.dv.y / mag };
-          const turned =
-            !lastSnapDir || Math.hypot(dir.x - lastSnapDir.x, dir.y - lastSnapDir.y) > 0.02;
-          if (turned) {
-            lastSnapWallT = now;
-            lastSnapDir = dir;
-            // Cap the scan: each candidate is a real short sim, so bound the
-            // per-recompute cost regardless of how large the budget is.
-            const MAX_DOTS = 24;
-            const mags: number[] = [];
-            for (
-              let m = DV_SNAP;
-              m <= engine.deltaVRemaining && mags.length < MAX_DOTS;
-              m += DV_SNAP
-            )
-              mags.push(m);
-            const viable = engine.viableSnaps(dir, mags);
-            snapDots = mags.map((m, i) => ({ mag: m, viable: viable[i] }));
-            aim.snapDots = snapDots;
-          }
-        }
       } else {
         aim = null;
-        lastSnapDir = null;
       }
 
       cam.follow(engine.probe.pos);
@@ -522,6 +553,7 @@ export default function GameCanvas() {
       debug.bodies = engine.level.bodies.length;
       debug.particles = scene?.particleCount ?? 0;
       debug.phase = engine.phase;
+      debug.aimMag = aim ? len(aim.dv) : null;
 
       // Mirror engine state into the store for the HUD (throttled).
       if (now - lastSync > 120) {
