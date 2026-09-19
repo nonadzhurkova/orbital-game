@@ -117,6 +117,22 @@ export const IconStar = (p: P & { dim?: boolean }) => {
   );
 };
 
+export const IconLock = (p: P) => (
+  <Base {...p}>
+    <rect x={5} y={11} width={14} height={9} rx={1.5} />
+    <path d="M8 11V7.5a4 4 0 0 1 8 0V11" />
+  </Base>
+);
+
+export const IconGrid = (p: P) => (
+  <Base {...p}>
+    <rect x={3.5} y={3.5} width={7} height={7} rx={1.2} />
+    <rect x={13.5} y={3.5} width={7} height={7} rx={1.2} />
+    <rect x={3.5} y={13.5} width={7} height={7} rx={1.2} />
+    <rect x={13.5} y={13.5} width={7} height={7} rx={1.2} />
+  </Base>
+);
+
 /** Impact burst for the lose screen. */
 export const IconBurst = (p: P) => (
   <Base {...p}>

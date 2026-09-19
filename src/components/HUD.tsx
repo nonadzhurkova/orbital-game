@@ -9,6 +9,7 @@ import TweenNumber from "@/ui/TweenNumber";
 import IntroCard from "./IntroCard";
 import EndOverlay from "./EndOverlay";
 import HelpOverlay from "./HelpOverlay";
+import LevelSelect from "./LevelSelect";
 import FlightLog from "./FlightLog";
 import Telemetry from "./Telemetry";
 import {
@@ -22,6 +23,7 @@ import {
   IconOrbit,
   IconRocket,
   IconX,
+  IconGrid,
 } from "@/ui/icons";
 
 function fmtTime(t: number): string {
@@ -41,6 +43,7 @@ export default function HUD() {
   const slideUp = useAnim(0.1);
   const commitPop = useAnim();
   const [helpOpen, setHelpOpen] = useState(false);
+  const [levelSelectOpen, setLevelSelectOpen] = useState(false);
 
   return (
     <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-3 sm:p-4">
@@ -58,9 +61,17 @@ export default function HUD() {
           className="flex items-start justify-between gap-3"
         >
           <div className="rounded-xl bg-black/45 px-4 py-2.5 backdrop-blur-sm">
-            <div className="text-sm font-bold text-white sm:text-base">
+            <button
+              className="pointer-events-auto flex items-center gap-1.5 text-sm font-bold text-white hover:text-sky-300 sm:text-base"
+              onClick={() => {
+                setLevelSelectOpen(true);
+                s.setPaused(true);
+              }}
+              aria-label="Change level"
+            >
               {s.levelIndex + 1}. {level.name}
-            </div>
+              <IconGrid size={13} className="text-white/40" />
+            </button>
             <div className="mt-1 flex items-center gap-2">
               <div className="h-2 w-28 overflow-hidden rounded-full bg-white/15 sm:w-40">
                 <div
@@ -197,6 +208,7 @@ export default function HUD() {
       <IntroCard />
       <EndOverlay />
       <HelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <LevelSelect open={levelSelectOpen} onClose={() => setLevelSelectOpen(false)} />
     </div>
   );
 }

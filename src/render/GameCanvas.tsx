@@ -4,11 +4,12 @@ import { GameEngine } from "@/game/engine";
 import { Autopilot } from "@/game/autopilot";
 import { makeLevel, KMS } from "@/game/levels";
 import { useGame } from "@/game/store";
+import { useProgress } from "@/game/progress";
 import { sound } from "@/game/sound";
 import { DT, orbitalElements } from "@/physics/engine";
 import { Vec2, sub, scale, len, dist, norm } from "@/physics/vec";
 import { Camera } from "./camera";
-import { AimState, DV_PER_PX } from "./types";
+import { AimState, DV_PER_PX, DV_SNAP } from "./types";
 import type { PixiScene, FrameInput } from "./pixi/PixiScene";
 
 /** Max fixed steps per rendered frame (keeps 100x from freezing the tab). */
@@ -70,6 +71,12 @@ export default function GameCanvas() {
     let seenEventId = 0;
     let predictSkip = 0;
     let predictCost = 0;
+    // Snap-dot viability is expensive (a short sim per candidate magnitude),
+    // so it's recomputed far less often than the prediction line: only when
+    // the aim direction actually changes, and throttled by wall time.
+    let snapDots: { mag: number; viable: boolean }[] = [];
+    let lastSnapDir: Vec2 | null = null;
+    let lastSnapWallT = 0;
     let disposed = false;
     let fpsSmoothed = 60;
     // One shared debug object, mutated in place (no per-frame allocation).
@@ -166,10 +173,16 @@ export default function GameCanvas() {
     };
 
     const dvFromDrag = (d: DragState): Vec2 => {
-      // Drag direction = launch direction; length = delta-v (clamped by engine).
+      // Drag direction = launch direction; length = delta-v, snapped to
+      // round steps so the player lands on a value instead of hunting for
+      // an exact pixel. Direction stays continuous — orbital timing rewards
+      // precise angles, and arrow keys already cover fine angle control.
       const p = screenOfProbe();
       const raw = scale(sub(d.current, p), DV_PER_PX);
-      return engine.clampDv(raw);
+      const mag = len(raw);
+      if (mag < 1e-6) return raw;
+      const snapped = Math.round(mag / DV_SNAP) * DV_SNAP;
+      return engine.clampDv(scale(raw, snapped / mag));
     };
 
     const canvasPos = (e: PointerEvent): Vec2 => {
@@ -394,6 +407,7 @@ export default function GameCanvas() {
         if (engine.phase === "won") {
           sound.win();
           winWallStart = now;
+          useProgress.getState().recordWin(levelIndex, engine.stars());
         }
         if (engine.phase === "lost") sound.lose();
         if (engine.phase === "won" || engine.phase === "lost") {
@@ -452,15 +466,44 @@ export default function GameCanvas() {
             dv: source.dv,
             prediction: engine.predict(source.dv, horizon),
             isBurn: source.isBurn,
+            snapDots,
           };
           const cost = performance.now() - t0;
           predictCost = cost > predictCost ? cost : predictCost * 0.98 + cost * 0.02;
           aimDirty = false;
         } else {
-          aim = { ...aim, dv: source.dv, isBurn: source.isBurn };
+          aim = { ...aim, dv: source.dv, isBurn: source.isBurn, snapDots };
+        }
+
+        // Recompute the snap-dot ladder only when the direction has turned
+        // meaningfully and at most a few times a second — each dot is a
+        // real short simulation, unlike the single cached prediction line.
+        const mag = len(source.dv);
+        if (mag > 1e-6 && now - lastSnapWallT > 180) {
+          const dir = { x: source.dv.x / mag, y: source.dv.y / mag };
+          const turned =
+            !lastSnapDir || Math.hypot(dir.x - lastSnapDir.x, dir.y - lastSnapDir.y) > 0.02;
+          if (turned) {
+            lastSnapWallT = now;
+            lastSnapDir = dir;
+            // Cap the scan: each candidate is a real short sim, so bound the
+            // per-recompute cost regardless of how large the budget is.
+            const MAX_DOTS = 24;
+            const mags: number[] = [];
+            for (
+              let m = DV_SNAP;
+              m <= engine.deltaVRemaining && mags.length < MAX_DOTS;
+              m += DV_SNAP
+            )
+              mags.push(m);
+            const viable = engine.viableSnaps(dir, mags);
+            snapDots = mags.map((m, i) => ({ mag: m, viable: viable[i] }));
+            aim.snapDots = snapDots;
+          }
         }
       } else {
         aim = null;
+        lastSnapDir = null;
       }
 
       cam.follow(engine.probe.pos);

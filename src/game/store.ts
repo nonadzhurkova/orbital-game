@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { LEVELS } from "./levels";
 import type { Phase } from "./engine";
+import { useProgress } from "./progress";
 
 export type SpeedMult = 1 | 10 | 100;
 
@@ -99,14 +100,17 @@ export const useGame = create<GameState>((set, get) => ({
   telemetry: null,
   log: [],
 
-  setLevel: (i) =>
+  setLevel: (i) => {
+    const clamped = Math.max(0, Math.min(LEVELS.length - 1, i));
+    useProgress.getState().setLastLevel(clamped);
     set((s) => ({
-      levelIndex: Math.max(0, Math.min(LEVELS.length - 1, i)),
+      levelIndex: clamped,
       resetNonce: s.resetNonce + 1,
       paused: false,
       speed: 1,
       log: [],
-    })),
+    }));
+  },
   nextLevel: () => {
     const { levelIndex, setLevel } = get();
     if (levelIndex < LEVELS.length - 1) setLevel(levelIndex + 1);

@@ -5,8 +5,9 @@ import {
   findCollision,
   orbitalElements,
   predictTrajectory,
+  cloneWorld,
 } from "@/physics/engine";
-import { Vec2, vec, add, sub, len, fromAngle, clone } from "@/physics/vec";
+import { Vec2, vec, add, sub, len, dist, fromAngle, clone } from "@/physics/vec";
 import { Level, LevelBody, PROBE_RADIUS, KMS } from "./levels";
 import type { TrajectoryResult } from "@/physics/types";
 
@@ -291,5 +292,49 @@ export class GameEngine {
     const ghost: Body = { ...this.probe, pos: clone(this.probe.pos), vel: baseVel };
     // 2 substeps: half the cost of the live sim; plenty for a dashed preview.
     return predictTrajectory(this.world, ghost, seconds, 3, 2);
+  }
+
+  /**
+   * Which magnitudes along `dir` (unit vector) lead to a close approach
+   * worth landing on: the probe reaches the target without crashing en
+   * route or leaving the map, and its closest approach falls inside the
+   * band a circularization burn can turn into the winning orbit — the same
+   * geometric window the autopilot's planner accepts a candidate on
+   * (roughly 1.8-4.5 target radii; tighter risks a perturbed orbit clipping
+   * the surface, wider misses the capture ring entirely). This does NOT
+   * require the instantaneous trajectory to already be a bound orbit — a
+   * burn is the expected next step, exactly as it is for the player.
+   * Used to filter which snap dots are shown while aiming; a cheap
+   * short-horizon sim per candidate, not the full 60s prediction.
+   */
+  viableSnaps(dir: Vec2, magnitudes: number[]): boolean[] {
+    const t = this.targetBody;
+    const R = t.radius;
+    return magnitudes.map((mag) => {
+      const sim = cloneWorld(this.world);
+      const baseVel =
+        this.phase === "aiming" ? this.startBody.vel : this.probe.vel;
+      sim.probe = {
+        id: "probe",
+        pos: clone(this.probe.pos),
+        vel: add(baseVel, { x: dir.x * mag, y: dir.y * mag }),
+        mass: 0,
+        radius: PROBE_RADIUS,
+      };
+      let closest = Infinity;
+      const maxSeconds = 60;
+      for (let i = 0; i < Math.ceil(maxSeconds / DT); i++) {
+        step(sim, DT, 2);
+        if (findCollision(sim)) return false;
+        if (len(sim.probe.pos) > this.level.mapRadius) return false;
+        const d = dist(sim.probe.pos, t.pos);
+        if (d < closest) {
+          closest = d;
+        } else if (closest < R * 6 && d > closest * 2.5) {
+          break; // past the encounter
+        }
+      }
+      return closest > R * 1.8 && closest < R * 4.5;
+    });
   }
 }

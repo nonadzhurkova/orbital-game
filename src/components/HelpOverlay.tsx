@@ -96,6 +96,12 @@ export default function HelpOverlay({
                   with the <b>Launch</b> button or <Key>Enter</Key>; cancel with{" "}
                   <Key>Esc</Key> or right-click.
                 </p>
+                <p>
+                  Speed snaps to 0.5 km/s steps as you drag — direction stays
+                  free. Green dots mark the steps that lead to a usable close
+                  approach on your current heading; no dot at a step means
+                  that speed misses the target or crashes.
+                </p>
               </Section>
 
               <Section title="Mid-course burn">

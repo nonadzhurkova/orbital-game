@@ -5,11 +5,53 @@
   test-verified solution cost (93.4 Δv vs par 100). Levels 2–5 have
   structural tests (orbit stability, no planet collisions) but no
   automated solvability search; pars need playtesting.
-- **Score persistence**: best stars per level are not saved to
-  localStorage yet — finishing a level and reloading forgets progress.
 - **Sound** is a minimal WebAudio oscillator synth (launch, burn, flyby,
   win, lose). No volume control, no music.
 - **No tutorial** beyond the intro card and hint lines.
+
+## Progress persistence & level select
+- `src/game/progress.ts`: a separate zustand `persist` store (key
+  `orbital-golf-progress` in localStorage) holding `lastLevelIndex` and
+  `bestStars` per level. Kept separate from the main `useGame` store
+  because that store's whole shape gets bumped/reset constantly (retry,
+  level change) and isn't meant to survive a reload wholesale.
+- `src/components/ProgressGate.tsx` blocks mounting GameCanvas/HUD
+  until the persisted level is restored (or a 300ms fallback fires),
+  so a reload resumes on the right level instead of flashing level 1
+  first. `useGame.setState` is used directly for the restore (not
+  `setLevel`) to skip the resetNonce bump — nothing has mounted an
+  engine yet.
+- `unlockedThrough(bestStars)` in progress.ts is the single source of
+  truth for "how far can the player jump" — level i+1 unlocks once
+  level i has any stars. Both `LevelSelect.tsx` (new: a `?`-style
+  overlay opened from the level name in the HUD, browsable any time)
+  and `EndOverlay.tsx`'s dot row use it, so they can't disagree.
+- Wins are recorded in `GameCanvas.tsx`'s phase-transition block (the
+  same place that logs the win/loss outcome), via
+  `useProgress.getState().recordWin(levelIndex, engine.stars())`.
+
+## Aim snap dots
+- Dragging to aim snaps the magnitude (not direction — direction stays
+  precise, arrow keys already cover fine control) to DV_SNAP steps
+  (0.5 km/s), applied once in `dvFromDrag` in GameCanvas.tsx so drag,
+  tip-grab, and the eventual numeric burn panel all go through the same
+  snap.
+- Only snap steps that are actually *useful* are drawn as dots:
+  `GameEngine.viableSnaps()` (engine.ts) runs a cheap short sim (2
+  substeps, ≤60s, early-exit on collision/past-encounter) per candidate
+  magnitude along the current drag direction and checks whether the
+  closest approach to the target lands in the same 1.8R-4.5R band the
+  autopilot's planner accepts a candidate on. This deliberately does
+  NOT require the instantaneous trajectory to already be a bound
+  orbit — a capture burn is the expected next step, same as for a real
+  player. (First version wrongly required an already-bound orbit and
+  found zero viable dots anywhere — see the two regression tests in
+  levels.test.ts, one confirming a dead-center aim is never viable at
+  any speed, since that's always a collision course.)
+- Throttled independently from the prediction line: recomputed only
+  when the drag direction turns >~1° and at most ~5x/second, capped at
+  24 candidates per recompute. Verified to hold the existing per-level
+  fps baseline (scripts/snap-perf.mjs) even on level 5.
 
 ## Renderer (PixiJS 8, migrated from canvas 2D)
 - Scene renderer is `src/render/pixi/PixiScene.ts` behind the same

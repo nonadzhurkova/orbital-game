@@ -1,6 +1,7 @@
 "use client";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { useGame } from "@/game/store";
+import { useProgress, unlockedThrough } from "@/game/progress";
 import { makeLevel, LEVELS, KMS } from "@/game/levels";
 import { SPRING, INSTANT, useFade } from "@/ui/motion";
 import TweenNumber from "@/ui/TweenNumber";
@@ -35,6 +36,8 @@ export default function EndOverlay() {
   const open = s.phase === "won" || s.phase === "lost";
   const won = s.phase === "won";
   const usedDv = s.budget - s.deltaVRemaining;
+  const bestStars = useProgress((st) => st.bestStars);
+  const unlocked = unlockedThrough(bestStars);
 
   const pop = (delay: number) =>
     reduced ? INSTANT : { ...SPRING, delay };
@@ -142,19 +145,25 @@ export default function EndOverlay() {
               </>
             )}
             <div className="mt-5 flex justify-center gap-1.5">
-              {LEVELS.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => s.setLevel(i)}
-                  className={`h-8 w-8 rounded-full text-xs font-bold transition-colors ${
-                    i === s.levelIndex
-                      ? "bg-sky-500 text-white"
-                      : "bg-white/10 text-white/70 hover:bg-white/20"
-                  }`}
-                >
-                  {i + 1}
-                </button>
-              ))}
+              {LEVELS.map((_, i) => {
+                const locked = i > unlocked;
+                return (
+                  <button
+                    key={i}
+                    disabled={locked}
+                    onClick={() => s.setLevel(i)}
+                    className={`h-8 w-8 rounded-full text-xs font-bold transition-colors ${
+                      locked
+                        ? "cursor-not-allowed bg-white/5 text-white/25"
+                        : i === s.levelIndex
+                          ? "bg-sky-500 text-white"
+                          : "bg-white/10 text-white/70 hover:bg-white/20"
+                    }`}
+                  >
+                    {i + 1}
+                  </button>
+                );
+              })}
             </div>
           </motion.div>
         </motion.div>

@@ -11,7 +11,7 @@ import { BloomFilter } from "pixi-filters";
 import type { Camera } from "../camera";
 import type { GameEngine, FlashEvent } from "@/game/engine";
 import type { AimState } from "../types";
-import { DV_PER_PX } from "../types";
+import { DV_PER_PX, DV_SNAP } from "../types";
 import { Level, LevelBody, PROBE_RADIUS, KMS } from "@/game/levels";
 import { len } from "@/physics/vec";
 import type { TrajectoryResult } from "@/physics/types";
@@ -589,6 +589,29 @@ export class PixiScene {
     const tip = { x: from.x + dir.x * px, y: from.y + dir.y * px };
     const color = aim.isBurn ? 0xffc85a : 0x78ffb4;
     g.moveTo(from.x, from.y).lineTo(tip.x, tip.y).stroke({ width: 2.5, color, alpha: 0.95 });
+
+    // Snap-step dots: the magnitude the drag/tip lands on is always a
+    // multiple of DV_SNAP. Only magnitudes whose short-sim check says this
+    // direction would bring the probe to a plausible capture distance are
+    // shown — a stop that flies past the target or falls short isn't worth
+    // landing on. The dot nearest the current drag length is lit brighter
+    // with a ring around it; the probe's own halo covers anything closer
+    // than ~14px, so skip drawing there to avoid a smudge.
+    for (const { mag, viable } of aim.snapDots) {
+      if (!viable) continue;
+      const dotPx = mag / DV_PER_PX;
+      if (dotPx < 14) continue;
+      const dx = from.x + dir.x * dotPx;
+      const dy = from.y + dir.y * dotPx;
+      const isCurrent = Math.abs(mag - clamped) < DV_SNAP / 2;
+      g.circle(dx, dy, isCurrent ? 4 : 2.4).fill({
+        color: 0x78ffb4,
+        alpha: isCurrent ? 1 : 0.7,
+      });
+      if (isCurrent) {
+        g.circle(dx, dy, 8).stroke({ width: 1.4, color: 0x78ffb4, alpha: 0.7 });
+      }
+    }
     const a = Math.atan2(dir.y, dir.x);
     g.moveTo(tip.x, tip.y)
       .lineTo(tip.x - Math.cos(a - 0.4) * 10, tip.y - Math.sin(a - 0.4) * 10)

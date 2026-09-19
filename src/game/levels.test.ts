@@ -181,3 +181,34 @@ describe("GameEngine rules", () => {
     expect(JSON.stringify(cloneWorld(eng.world))).toBe(snap);
   });
 });
+
+describe("GameEngine.viableSnaps", () => {
+  it("flags a dead-center aim as never viable (always a collision course)", () => {
+    const eng = new GameEngine(makeLevel(0));
+    const dir = norm(sub(eng.targetBody.pos, eng.probe.pos));
+    const mags = [50, 70, 90, 110, 130];
+    const viable = eng.viableSnaps(dir, mags);
+    expect(viable.every((v) => v === false)).toBe(true);
+  });
+
+  it("flags viable magnitudes at a known-good lateral offset", () => {
+    const eng = new GameEngine(makeLevel(0));
+    const toTarget = norm(sub(eng.targetBody.pos, eng.probe.pos));
+    const perp = { x: -toTarget.y, y: toTarget.x };
+    const aimPoint = add(eng.targetBody.pos, scale(perp, -2 * eng.targetBody.radius));
+    const dir = norm(sub(aimPoint, eng.probe.pos));
+    const mags = [50, 65, 70, 90, 110, 130];
+    const viable = eng.viableSnaps(dir, mags);
+    // 70 and up should clear the capture band at this offset (verified
+    // against the closest-approach distances directly during development).
+    expect(viable.some((v) => v === true)).toBe(true);
+    expect(viable[0]).toBe(false); // 50: too slow, falls short of the band
+  });
+
+  it("does not disturb the live world", () => {
+    const eng = new GameEngine(makeLevel(0));
+    const snap = JSON.stringify(cloneWorld(eng.world));
+    eng.viableSnaps(norm(sub(eng.targetBody.pos, eng.probe.pos)), [50, 100]);
+    expect(JSON.stringify(cloneWorld(eng.world))).toBe(snap);
+  });
+});

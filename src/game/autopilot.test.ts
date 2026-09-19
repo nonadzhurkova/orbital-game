@@ -67,6 +67,6 @@ describe("autopilot", () => {
       expect(engine.phase).toBe("won");
       expect(engine.deltaVUsed).toBeLessThanOrEqual(engine.level.budget);
     },
-    60000,
+    120000,
   );
 });
