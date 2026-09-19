@@ -72,6 +72,13 @@ export default function GameCanvas() {
     // "Select a burn point" below); recomputed periodically while flying.
     let coastCheckpoints: { t: number; pos: Vec2; dist: number }[] = [];
     let lastCheckpointRecompute = 0;
+    // Wall time coastCheckpoints() last returned a non-empty result. Near a
+    // close flyby (a moon, a flyby giant) the predicted closest-approach
+    // point is sensitive to tiny timing differences between recomputes, so a
+    // real checkpoint can vanish for one or two 400ms ticks and reappear —
+    // hold the last dots briefly instead of blinking them out immediately.
+    let lastCheckpointsFoundAt = 0;
+    const CHECKPOINT_HOLD_MS = 1200;
     let lastSelectedCheckpointT = useGame.getState().selectedCheckpointT;
     let armedCheckpointT: number | null = null;
     let raf = 0;
@@ -466,11 +473,21 @@ export default function GameCanvas() {
       }
       if (checkpointSource !== undefined && now - lastCheckpointRecompute > 400) {
         lastCheckpointRecompute = now;
-        coastCheckpoints =
+        const found =
           checkpointSource === "flying"
             ? engine.coastCheckpoints()
             : engine.coastCheckpoints(checkpointSource);
-        useGame.getState().syncFromEngine({ coastCheckpoints });
+        if (found.length > 0) {
+          lastCheckpointsFoundAt = now;
+          coastCheckpoints = found;
+          useGame.getState().syncFromEngine({ coastCheckpoints });
+        } else if (
+          coastCheckpoints.length > 0 &&
+          now - lastCheckpointsFoundAt > CHECKPOINT_HOLD_MS
+        ) {
+          coastCheckpoints = [];
+          useGame.getState().syncFromEngine({ coastCheckpoints: [] });
+        }
       } else if (checkpointSource === undefined && coastCheckpoints.length > 0) {
         coastCheckpoints = [];
         useGame.getState().syncFromEngine({ coastCheckpoints: [] });

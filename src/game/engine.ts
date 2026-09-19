@@ -320,7 +320,8 @@ export class GameEngine {
       let closest = Infinity;
       const maxSeconds = 60;
       for (let i = 0; i < Math.ceil(maxSeconds / DT); i++) {
-        step(sim, DT, 2);
+        // Full substeps — see the comment in coastCheckpoints() below.
+        step(sim, DT, 4);
         if (findCollision(sim)) return false;
         if (len(sim.probe.pos) > this.level.mapRadius) return false;
         const d = dist(sim.probe.pos, t.pos);
@@ -377,7 +378,12 @@ export class GameEngine {
     const steps = Math.ceil(maxSeconds / DT);
     const startTime = this.time;
     for (let i = 0; i < steps; i++) {
-      step(sim, DT, 2);
+      // Full substeps: a ghost run close to a massive body (flyby giants,
+      // moons near a primary) needs to match the live sim's bend almost
+      // exactly, or the predicted closest-approach point drifts from the
+      // real one as the encounter tightens — same reason the autopilot's
+      // evaluate() insists on 4 substeps rather than 2.
+      step(sim, DT, 4);
       if (findCollision(sim)) break;
       if (len(sim.probe!.pos) > this.level.mapRadius) break;
       const d = dist(sim.probe!.pos, t.pos);
