@@ -120,11 +120,12 @@ export default function HUD() {
             </button>
           </div>
         </motion.div>
+      </div>
 
-        {/* Telemetry: live orbital metrics, below the top bar */}
-        <div className="pointer-events-none flex">
-          <Telemetry />
-        </div>
+      {/* Telemetry: floats top-left, small/translucent on mobile so it
+          doesn't crowd the play area, full size on larger screens. */}
+      <div className="pointer-events-none absolute left-3 top-36 sm:left-4 sm:top-28">
+        <Telemetry />
       </div>
 
       {/* Bottom: hints above the control bar so they never cover the probe */}
